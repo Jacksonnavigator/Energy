@@ -1,6 +1,7 @@
 services:
   - type: web
     name: smart-energy-monitor
+    rootDir: Web1
     runtime: static
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist/client

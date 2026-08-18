@@ -48,3 +48,10 @@ cd <repository-name>
 npm i
 npm run dev
 ```
+
+## Deploy to Render
+
+1. Connect this GitHub repository in [Render](https://render.com).
+2. Deploy using a **Blueprint** from `render.yaml` at the repository root (recommended for one-click deploy from the monorepo). Alternatively, use `Web1/render.yaml` when **Root Directory** is already set to `Web1`, or create a **Static Site** manually with **Root Directory** `Web1`.
+3. In the Render dashboard, set all `VITE_FIREBASE_*` environment variables (and `VITE_ADMIN_EMAILS` if used). Use the keys listed in `.env.example`.
+4. Confirm **Build Command** is `npm ci && npm run build` and **Publish Directory** is `dist/client`.
