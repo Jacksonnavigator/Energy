@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-label="Smart Energy Monitor favicon">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#071d2d"/>
+      <stop offset="100%" stop-color="#0a1d31"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#4ae7d0"/>
+      <stop offset="100%" stop-color="#4ecaf4"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="320" height="320" rx="62" fill="url(#bg)"/>
+
+  <path d="M82 144L160 76L238 144V236C238 246.5 229.5 255 219 255H101C90.5 255 82 246.5 82 236V144Z"
+        fill="none" stroke="url(#brand)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g fill="none" stroke="url(#brand)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M124 144V98C124 88.1 132.1 80 142 80H178C187.9 80 196 88.1 196 98V144"/>
+    <path d="M110 165H210" opacity="0.9"/>
+    <path d="M137 123H183" opacity="0.9"/>
+  </g>
+
+  <path d="M150 134L124 167H150L134 208L191 155H165L178 134H150Z"
+        fill="url(#brand)" stroke="none"/>
+
+  <path d="M150 236V196H170V236" fill="none" stroke="url(#brand)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

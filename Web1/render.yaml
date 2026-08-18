@@ -1,0 +1,9 @@
+services:
+  - type: static
+    name: smart-energy-monitor
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: .output/public
+    envVars:
+      - key: NODE_VERSION
+        value: 22
