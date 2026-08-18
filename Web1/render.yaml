@@ -1,11 +1,13 @@
 services:
-  - type: static
+  - type: web
     name: smart-energy-monitor
-    runtime: static
+    runtime: node
     buildCommand: npm install && npm run build
-    staticPublishPath: .output/public
+    startCommand: node .output/server/index.mjs
     envVars:
       - key: NODE_VERSION
         value: 22
       - key: NODE_ENV
         value: production
+      - key: NITRO_PRESET
+        value: node-server
