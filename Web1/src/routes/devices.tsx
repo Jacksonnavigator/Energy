@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Search } from "lucide-react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/hydranet/AppShell";
 import { Switch } from "@/components/ui/switch";
-import { useHydranetDashboardData, type DeviceStatus } from "@/lib/dashboard-data";
+import { sendRelayCommand, useHydranetDashboardData, type DeviceStatus } from "@/lib/dashboard-data";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/devices")({
@@ -36,39 +37,45 @@ const commandStyles: Record<string, string> = {
 };
 
 function DevicesPage() {
-  const { devices: seed, allTelemetry } = useHydranetDashboardData();
-  const [rows, setRows] = useState(seed);
+  const { devices, recentTelemetry, formatTelemetryDateTime } = useHydranetDashboardData();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | DeviceStatus>("all");
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    setRows(seed);
-  }, [seed]);
-
-  const visible = rows.filter(
+  const visible = devices.filter(
     (d) =>
       (filter === "all" || d.status === filter) &&
       (d.name + d.id + d.site).toLowerCase().includes(query.toLowerCase()),
   );
 
-  const uniqueSites = new Set(rows.map((d) => d.site)).size;
+  const uniqueSites = new Set(devices.map((d) => d.site)).size;
 
-  const toggleRelay = (id: string) => {
-    const target = rows.find((d) => d.id === id);
+  const toggleRelay = async (id: string) => {
+    const target = devices.find((d) => d.id === id);
     if (!target) return;
+    const turnOn = !target.relay;
     const ok = window.confirm(
-      `Send relay ${target.relay ? "OFF" : "ON"} command to ${target.name} (${target.id})?`,
+      `Send relay ${turnOn ? "ON" : "OFF"} command to ${target.name} (${target.id})?`,
     );
     if (!ok) return;
-    setRows((prev) => prev.map((d) => (d.id === id ? { ...d, relay: !d.relay, command: "pending" } : d)));
-    window.setTimeout(
-      () => setRows((prev) => prev.map((d) => (d.id === id ? { ...d, command: "confirmed" } : d))),
-      1200,
-    );
+
+    setPendingIds((prev) => new Set(prev).add(id));
+    try {
+      await sendRelayCommand(id, turnOn);
+      toast.success(`Relay ${turnOn ? "ON" : "OFF"} command sent to ${target.name}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to send relay command");
+    } finally {
+      setPendingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   return (
-    <AppShell title="Devices" subtitle={`${rows.length} connected assets across ${uniqueSites} site${uniqueSites !== 1 ? 's' : ''}`}>
+    <AppShell title="Devices" subtitle={`${devices.length} connected assets across ${uniqueSites} site${uniqueSites !== 1 ? "s" : ""}`}>
       <div className="card-surface p-4">
         <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
           <div className="relative min-w-0">
@@ -131,9 +138,16 @@ function DevicesPage() {
             </div>
             <div className="mt-4 flex items-center justify-between border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
-                Relay · <span className={cn("capitalize", commandStyles[d.command])}>{d.command}</span>
+                Relay ·{" "}
+                <span className={cn("capitalize", commandStyles[pendingIds.has(d.id) ? "pending" : d.command])}>
+                  {pendingIds.has(d.id) ? "pending" : d.command}
+                </span>
               </span>
-              <Switch checked={d.relay} onCheckedChange={() => toggleRelay(d.id)} disabled={d.status === "offline"} />
+              <Switch
+                checked={d.relay}
+                onCheckedChange={() => toggleRelay(d.id)}
+                disabled={d.status === "offline" || pendingIds.has(d.id)}
+              />
             </div>
           </div>
         ))}
@@ -170,9 +184,15 @@ function DevicesPage() {
                 <td className="px-4 py-3 tabular-nums">{d.power_factor.toFixed(2)}</td>
                 <td className="px-4 py-3 tabular-nums">{d.todayKwh} kWh</td>
                 <td className="px-4 py-3 text-muted-foreground">{d.lastSeen}</td>
-                <td className={cn("px-4 py-3 text-xs font-medium capitalize", commandStyles[d.command])}>{d.command}</td>
+                <td className={cn("px-4 py-3 text-xs font-medium capitalize", commandStyles[pendingIds.has(d.id) ? "pending" : d.command])}>
+                  {pendingIds.has(d.id) ? "pending" : d.command}
+                </td>
                 <td className="px-4 py-3">
-                  <Switch checked={d.relay} onCheckedChange={() => toggleRelay(d.id)} disabled={d.status === "offline"} />
+                  <Switch
+                    checked={d.relay}
+                    onCheckedChange={() => toggleRelay(d.id)}
+                    disabled={d.status === "offline" || pendingIds.has(d.id)}
+                  />
                 </td>
               </tr>
             ))}
@@ -181,7 +201,7 @@ function DevicesPage() {
         {visible.length === 0 && <p className="px-4 py-8 text-center text-sm text-muted-foreground">No devices match this filter.</p>}
       </div>
 
-      {allTelemetry.length > 0 && (
+      {recentTelemetry.length > 0 && (
         <section className="card-surface mt-6 p-5">
           <h2 className="text-sm font-semibold">Detailed telemetry</h2>
           <div className="mt-4 overflow-x-auto">
@@ -194,12 +214,11 @@ function DevicesPage() {
                 </tr>
               </thead>
               <tbody>
-                {allTelemetry.slice(0, 15).map((point) => {
-                  const date = new Date(point.ts);
+                {recentTelemetry.slice(0, 20).map((point) => {
                   return (
                     <tr key={point.id} className="border-b border-border/50 hover:bg-secondary/30">
-                      <td className="py-2 px-3">{point.deviceName || 'Unknown'}</td>
-                      <td className="py-2 px-3 text-muted-foreground">{date.toLocaleString()}</td>
+                      <td className="py-2 px-3">{point.deviceName || "Unknown"}</td>
+                      <td className="py-2 px-3 text-muted-foreground">{formatTelemetryDateTime(point.ts)}</td>
                       <td className="text-right py-2 px-3">{(point.power / 1000).toFixed(2)}</td>
                     </tr>
                   );

@@ -3,7 +3,7 @@ import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAx
 import { PiggyBank, Receipt, TrendingDown, Wallet } from "lucide-react";
 import { AppShell } from "@/components/hydranet/AppShell";
 import { StatCard } from "@/components/hydranet/StatCard";
-import { useHydranetDashboardData } from "@/lib/dashboard-data";
+import { EMPTY_TELEMETRY_MSG, useHydranetDashboardData } from "@/lib/dashboard-data";
 
 export const Route = createFileRoute("/costs")({
   head: () => ({
@@ -21,15 +21,16 @@ export const Route = createFileRoute("/costs")({
 });
 
 function CostsPage() {
-  const { costTrend, siteBreakdown, platformSettings, currency, allTelemetry } = useHydranetDashboardData();
+  const { costTrend, siteBreakdown, platformSettings, currency, recentTelemetry, formatTelemetryDateTime, recommendations, tariffPerKwh, getPointKwh, EMPTY_TELEMETRY_MSG: emptyMsg } =
+    useHydranetDashboardData();
   const monthToDate = siteBreakdown.reduce((sum, site) => sum + site.cost, 0);
   const totalSiteSpend = siteBreakdown.reduce((sum, site) => sum + site.cost, 0);
-  const budgetRemaining = Math.max(0, (platformSettings.maxDailyCost || 0) * 30 - monthToDate);
-  const avgRate = platformSettings.tariffPerKwh || 0;
-  const savingsIdentified = Math.max(0, monthToDate * 0.08);
+  const budgetRemaining = Math.max(0, (platformSettings.monthlyBudget || platformSettings.maxDailyCost * 30) - monthToDate);
+  const avgRate = tariffPerKwh;
+  const savingsIdentified = recommendations.reduce((sum, rec) => sum + rec.savingTzs, 0);
 
   return (
-    <AppShell title="Costs" subtitle={`Spend and budget variance · ${costTrend.length || 0} months tracked`}>
+    <AppShell title="Costs" subtitle={`Spend and budget variance · ${costTrend.length || 0} periods tracked`}>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Month to date" value={currency(monthToDate)} icon={Wallet} tone="primary" />
         <StatCard label="Budget remaining" value={currency(budgetRemaining)} icon={PiggyBank} />
@@ -41,30 +42,34 @@ function CostsPage() {
         <h2 className="text-sm font-semibold">Spend vs budget</h2>
         <p className="text-xs text-muted-foreground">Monthly totals in TZS</p>
         <div className="mt-5 h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={costTrend} margin={{ left: 4, right: 4, top: 8 }}>
-              <defs>
-                <linearGradient id="costFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="m" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-              <YAxis width={64} tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-              <Tooltip
-                contentStyle={{
-                  background: "var(--popover)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "0.75rem",
-                  fontSize: 12,
-                  color: "var(--popover-foreground)",
-                }}
-              />
-              <Area type="monotone" dataKey="cost" name="Spend" stroke="var(--chart-1)" strokeWidth={2} fill="url(#costFill)" />
-              <Line type="monotone" dataKey="budget" name="Budget" stroke="var(--chart-2)" strokeDasharray="5 4" strokeWidth={2} dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
+          {costTrend.length ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={costTrend} margin={{ left: 4, right: 4, top: 8 }}>
+                <defs>
+                  <linearGradient id="costFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="m" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                <YAxis width={64} tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--popover)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "0.75rem",
+                    fontSize: 12,
+                    color: "var(--popover-foreground)",
+                  }}
+                />
+                <Area type="monotone" dataKey="cost" name="Spend" stroke="var(--chart-1)" strokeWidth={2} fill="url(#costFill)" />
+                <Line type="monotone" dataKey="budget" name="Budget" stroke="var(--chart-2)" strokeDasharray="5 4" strokeWidth={2} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+          )}
         </div>
       </section>
 
@@ -93,7 +98,7 @@ function CostsPage() {
         </ul>
       </section>
 
-      {allTelemetry.length > 0 && (
+      {recentTelemetry.length > 0 && (
         <section className="card-surface mt-6 p-5">
           <h2 className="text-sm font-semibold">Live cost readings</h2>
           <div className="mt-4 overflow-x-auto">
@@ -107,14 +112,13 @@ function CostsPage() {
                 </tr>
               </thead>
               <tbody>
-                {allTelemetry.slice(0, 15).map((point) => {
-                  const date = new Date(point.ts);
-                  const kwh = (point.power / 1000) * 0.25;
-                  const estimatedCost = kwh * (platformSettings.tariffPerKwh || 0);
+                {recentTelemetry.slice(0, 20).map((point) => {
+                  const kwh = getPointKwh(point);
+                  const estimatedCost = kwh * tariffPerKwh;
                   return (
                     <tr key={point.id} className="border-b border-border/50 hover:bg-secondary/30">
-                      <td className="py-2 px-3">{point.deviceName || 'Unknown'}</td>
-                      <td className="py-2 px-3 text-muted-foreground">{date.toLocaleString()}</td>
+                      <td className="py-2 px-3">{point.deviceName || "Unknown"}</td>
+                      <td className="py-2 px-3 text-muted-foreground">{formatTelemetryDateTime(point.ts)}</td>
                       <td className="text-right py-2 px-3">{(point.power / 1000).toFixed(2)} kW</td>
                       <td className="text-right py-2 px-3">{currency(estimatedCost)}</td>
                     </tr>

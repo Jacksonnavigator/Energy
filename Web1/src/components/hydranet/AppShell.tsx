@@ -1,8 +1,8 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useEffect, useState, type ReactNode } from "react";
+import { onAuthStateChanged } from "firebase/auth";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
-  AlertTriangle,
   BarChart3,
   Cpu,
   Download,
@@ -11,11 +11,12 @@ import {
   Menu,
   Moon,
   Settings,
-  ShieldCheck,
   Sun,
   Wallet,
   X,
 } from "lucide-react";
+import { auth } from "@/lib/firebase";
+import { useHydranetDashboardData } from "@/lib/dashboard-data";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -23,9 +24,7 @@ const nav = [
   { to: "/devices", label: "Devices", icon: Cpu },
   { to: "/energy", label: "Energy", icon: BarChart3 },
   { to: "/sustainability", label: "Sustainability", icon: Leaf },
-  { to: "/reliability", label: "Reliability", icon: ShieldCheck },
   { to: "/costs", label: "Costs", icon: Wallet },
-  { to: "/alerts", label: "Alerts", icon: AlertTriangle },
   { to: "/exports", label: "Exports", icon: Download },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
@@ -99,15 +98,73 @@ function Brand() {
   );
 }
 
+function GridStatusCard() {
+  const { devices } = useHydranetDashboardData();
+  const totalLoad = devices.reduce((sum, device) => sum + device.load, 0);
+  const offlineCount = devices.filter((device) => device.status === "offline" || device.status === "fault").length;
+
+  const status = useMemo(() => {
+    if (!devices.length) return { label: "No devices", tone: "bg-muted-foreground" };
+    if (offlineCount > 0) return { label: "Degraded", tone: "bg-warning" };
+    if (totalLoad > devices.length * 8) return { label: "High load", tone: "bg-warning" };
+    return { label: "Nominal", tone: "bg-success" };
+  }, [devices.length, offlineCount, totalLoad]);
+
+  return (
+    <div className="card-surface p-3">
+      <p className="text-xs font-medium">Grid status</p>
+      <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className={cn("h-1.5 w-1.5 rounded-full", status.tone)} />
+        {status.label} · {totalLoad.toFixed(1)} kW fleet load
+      </p>
+    </div>
+  );
+}
+
+function UserBadge({ userEmail }: { userEmail?: string | null }) {
+  const [email, setEmail] = useState(userEmail ?? null);
+
+  useEffect(() => {
+    if (userEmail) {
+      setEmail(userEmail);
+      return undefined;
+    }
+    if (!auth) return undefined;
+    return onAuthStateChanged(auth, (user) => setEmail(user?.email ?? null));
+  }, [userEmail]);
+
+  const initials = email
+    ? email
+        .split("@")[0]
+        .split(/[._-]/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() ?? "")
+        .join("") || "?"
+    : "?";
+  const displayName = email ? email.split("@")[0] : "Guest";
+
+  return (
+    <div className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-card px-2.5 sm:flex">
+      <span className="grid h-6 w-6 place-items-center rounded-md bg-accent text-[11px] font-semibold text-accent-foreground">
+        {initials}
+      </span>
+      <span className="max-w-[120px] truncate text-xs font-medium">{displayName}</span>
+    </div>
+  );
+}
+
 export function AppShell({
   title,
   subtitle,
   actions,
+  userEmail,
   children,
 }: {
   title: string;
   subtitle?: string;
   actions?: ReactNode;
+  userEmail?: string | null;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -120,13 +177,7 @@ export function AppShell({
           <p className="label-eyebrow px-3 pb-2">Operations</p>
           <NavList />
         </div>
-        <div className="card-surface p-3">
-          <p className="text-xs font-medium">Grid status</p>
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="h-1.5 w-1.5 rounded-full bg-success" />
-            Nominal · 49.98 Hz
-          </p>
-        </div>
+        <GridStatusCard />
       </aside>
 
       {open && (
@@ -165,12 +216,7 @@ export function AppShell({
             <div className="flex shrink-0 items-center gap-2">
               {actions}
               <ThemeToggle />
-              <div className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-card px-2.5 sm:flex">
-                <span className="grid h-6 w-6 place-items-center rounded-md bg-accent text-[11px] font-semibold text-accent-foreground">
-                  JW
-                </span>
-                <span className="text-xs font-medium">Jackson W.</span>
-              </div>
+              <UserBadge userEmail={userEmail} />
             </div>
           </div>
         </header>

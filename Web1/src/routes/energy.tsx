@@ -4,7 +4,14 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Responsive
 import { ArrowDown, ArrowUp, Gauge, Leaf, Timer, Zap } from "lucide-react";
 import { AppShell } from "@/components/hydranet/AppShell";
 import { StatCard } from "@/components/hydranet/StatCard";
-import { useHydranetDashboardData, type TouPeriod } from "@/lib/dashboard-data";
+import {
+  EMPTY_TELEMETRY_MSG,
+  getComparisonPeriodRange,
+  useHydranetDashboardData,
+  type ComparisonPeriod,
+  type EnergyChartRange,
+  type TouPeriod,
+} from "@/lib/dashboard-data";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/energy")({
@@ -37,10 +44,8 @@ const periodColor: Record<TouPeriod, string> = {
 };
 
 type SortKey = "hour" | "kwh" | "cost";
-type ChartRange = "hours" | "days" | "weeks" | "months";
-
 function TimeOfUseExplorer() {
-  const { hourlyProfile, touBands, currency } = useHydranetDashboardData();
+  const { hourlyProfile, touBands, currency, EMPTY_TELEMETRY_MSG: emptyMsg } = useHydranetDashboardData();
   const [filter, setFilter] = useState<TouPeriod | "all">("all");
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "hour", dir: "asc" });
 
@@ -118,6 +123,7 @@ function TimeOfUseExplorer() {
       </div>
 
       <div className="h-64 px-2 py-4">
+        {hourlyProfile.length ? (
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={[...rows].sort((a, b) => a.hour - b.hour)} margin={{ left: -18, right: 8, top: 8 }}>
             <CartesianGrid stroke="var(--border)" vertical={false} />
@@ -134,6 +140,9 @@ function TimeOfUseExplorer() {
             </Bar>
           </BarChart>
         </ResponsiveContainer>
+        ) : (
+          <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+        )}
       </div>
 
       <div className="overflow-x-auto border-t border-border">
@@ -169,127 +178,206 @@ function TimeOfUseExplorer() {
   );
 }
 
+
+const DEVICE_LINE_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+
+function eatDateInputValue(ts: number): string {
+  const eat = new Date(ts + 3 * 60 * 60 * 1000);
+  const y = eat.getUTCFullYear();
+  const m = String(eat.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(eat.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function DeviceComparisonChart() {
+  const {
+    devices,
+    getDeviceComparisonSeries,
+    EMPTY_TELEMETRY_MSG: emptyMsg,
+  } = useHydranetDashboardData();
+  const [period, setPeriod] = useState<ComparisonPeriod>("week");
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  const weekRange = getComparisonPeriodRange("week");
+  const [customFrom, setCustomFrom] = useState(() => eatDateInputValue(weekRange.startMs));
+  const [customTo, setCustomTo] = useState(() => eatDateInputValue(weekRange.endMs));
+
+  const { startMs, endMs } = useMemo(() => {
+    if (period === "custom") {
+      const fromMs = new Date(`${customFrom}T00:00:00+03:00`).getTime();
+      const toMs = new Date(`${customTo}T23:59:59+03:00`).getTime();
+      return getComparisonPeriodRange("custom", { fromMs, toMs });
+    }
+    return getComparisonPeriodRange(period);
+  }, [period, customFrom, customTo]);
+
+  const chartData = useMemo(
+    () => getDeviceComparisonSeries(selectedDeviceIds, startMs, endMs),
+    [getDeviceComparisonSeries, selectedDeviceIds, startMs, endMs],
+  );
+
+  const activeDevices = useMemo(() => {
+    if (!selectedDeviceIds.length) return devices;
+    return devices.filter((device) => selectedDeviceIds.includes(device.id));
+  }, [devices, selectedDeviceIds]);
+
+  const toggleDevice = (deviceId: string) => {
+    setSelectedDeviceIds((current) =>
+      current.includes(deviceId) ? current.filter((id) => id !== deviceId) : [...current, deviceId],
+    );
+  };
+
+  const periodPresets: { id: ComparisonPeriod; label: string }[] = [
+    { id: "hour", label: "Last hour" },
+    { id: "day", label: "Last 24h" },
+    { id: "week", label: "Last 7 days" },
+    { id: "month", label: "Last 30 days" },
+    { id: "custom", label: "Custom" },
+  ];
+
+  const showTotalLine = activeDevices.length >= 2;
+
+  return (
+    <section className="card-surface border-primary/30 p-5 shadow-sm ring-1 ring-primary/15">
+      <div className="flex flex-col gap-4 border-b border-border pb-4">
+        <div>
+          <h2 className="text-base font-semibold tracking-tight">Device comparison</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Compare TV, Fridge, or all devices on one chart · pick hour, day, week, month or custom dates
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSelectedDeviceIds([])}
+            className={cn(
+              "rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors",
+              selectedDeviceIds.length === 0
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border text-muted-foreground hover:text-foreground",
+            )}
+          >
+            All devices
+          </button>
+          {devices.map((device) => {
+            const active = selectedDeviceIds.length === 0 || selectedDeviceIds.includes(device.id);
+            return (
+              <button
+                key={device.id}
+                type="button"
+                onClick={() => toggleDevice(device.id)}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors",
+                  active && selectedDeviceIds.length > 0
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : selectedDeviceIds.length === 0
+                      ? "border-border text-muted-foreground hover:text-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {device.name}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {periodPresets.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => setPeriod(preset.id)}
+              className={cn(
+                "rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors",
+                period === preset.id
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {preset.label}
+            </button>
+          ))}
+          {period === "custom" && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <label className="flex items-center gap-1.5">
+                From
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(event) => setCustomFrom(event.target.value)}
+                  className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+                />
+              </label>
+              <label className="flex items-center gap-1.5">
+                To
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(event) => setCustomTo(event.target.value)}
+                  className="rounded-md border border-border bg-background px-2 py-1 text-foreground"
+                />
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-5 h-80">
+        {chartData.length ? (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ left: -18, right: 4, top: 8 }}>
+              <CartesianGrid stroke="var(--border)" vertical={false} />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+              <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} unit=" kWh" />
+              <Tooltip contentStyle={tooltipStyle} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              {activeDevices.map((device, index) => (
+                <Line
+                  key={device.id}
+                  type="monotone"
+                  dataKey={device.id}
+                  name={device.name}
+                  stroke={DEVICE_LINE_COLORS[index % DEVICE_LINE_COLORS.length]}
+                  strokeWidth={2}
+                  dot={false}
+                />
+              ))}
+              {showTotalLine && (
+                <Line
+                  type="monotone"
+                  dataKey="total"
+                  name="Total"
+                  stroke="var(--muted-foreground)"
+                  strokeWidth={2}
+                  strokeDasharray="6 4"
+                  dot={false}
+                />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function EnergyPage() {
-  const { consumptionSeries, hourlyProfile, siteBreakdown, devices, platformSettings, currency, tariffPerKwh, allTelemetry, GRID_EMISSION_FACTOR_KGCO2_PER_KWH } = useHydranetDashboardData();
-  const [chartRange, setChartRange] = useState<ChartRange>("hours");
+  const {
+    siteBreakdown,
+    devices,
+    platformSettings,
+    currency,
+    recentTelemetry, formatTelemetryDateTime,
+    getEnergyChartSeries,
+    getPointKwh,
+    GRID_EMISSION_FACTOR_KGCO2_PER_KWH,
+    EMPTY_TELEMETRY_MSG: emptyMsg,
+  } = useHydranetDashboardData();
+  const [chartRange, setChartRange] = useState<EnergyChartRange>("hours");
 
-  const chartData = useMemo(() => {
-    if (!allTelemetry.length) {
-      return [{ label: 'No data', kwh: 0, cost: 0 }];
-    }
-
-    const kwhValue = (pointPower: number) => Math.max(0, (pointPower / 1000) * 0.25);
-    const formatCost = (kwh: number) => Number((kwh * tariffPerKwh).toFixed(1));
-
-    if (chartRange === 'hours') {
-      const latest = new Date(Math.max(...allTelemetry.map((point) => point.ts)));
-      const start = new Date(latest);
-      start.setHours(latest.getHours() - 23, 0, 0, 0);
-      const buckets = new Map<number, number>();
-
-      allTelemetry.forEach((point) => {
-        const date = new Date(point.ts);
-        const bucketKey = new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours()).getTime();
-        buckets.set(bucketKey, (buckets.get(bucketKey) ?? 0) + point.power);
-      });
-
-      return Array.from({ length: 24 }, (_, index) => {
-        const ts = new Date(start);
-        ts.setHours(start.getHours() + index);
-        const key = new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), ts.getHours()).getTime();
-        const totalPower = buckets.get(key) ?? 0;
-        const kwh = kwhValue(totalPower);
-        return {
-          label: ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
-          kwh: Number(kwh.toFixed(1)),
-          cost: formatCost(kwh),
-        };
-      });
-    }
-
-    if (chartRange === 'days') {
-      const latest = new Date(Math.max(...allTelemetry.map((point) => point.ts)));
-      const start = new Date(latest);
-      start.setHours(0, 0, 0, 0);
-      start.setDate(start.getDate() - 6);
-      const buckets = new Map<string, number>();
-
-      allTelemetry.forEach((point) => {
-        const date = new Date(point.ts);
-        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-        buckets.set(key, (buckets.get(key) ?? 0) + point.power);
-      });
-
-      return Array.from({ length: 7 }, (_, index) => {
-        const ts = new Date(start);
-        ts.setDate(start.getDate() + index);
-        const key = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`;
-        const totalPower = buckets.get(key) ?? 0;
-        const kwh = kwhValue(totalPower);
-        return {
-          label: ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-          kwh: Number(kwh.toFixed(1)),
-          cost: formatCost(kwh),
-        };
-      });
-    }
-
-    if (chartRange === 'weeks') {
-      const latest = new Date(Math.max(...allTelemetry.map((point) => point.ts)));
-      const start = new Date(latest);
-      const day = start.getDay();
-      const diff = (day + 6) % 7;
-      start.setDate(start.getDate() - diff);
-      start.setHours(0, 0, 0, 0);
-      start.setDate(start.getDate() - 35);
-      const buckets = new Map<string, number>();
-
-      allTelemetry.forEach((point) => {
-        const date = new Date(point.ts);
-        const monday = new Date(date);
-        const mondayDay = monday.getDay();
-        const mondayDiff = (mondayDay + 6) % 7;
-        monday.setDate(monday.getDate() - mondayDiff);
-        monday.setHours(0, 0, 0, 0);
-        const key = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
-        buckets.set(key, (buckets.get(key) ?? 0) + point.power);
-      });
-
-      return Array.from({ length: 6 }, (_, index) => {
-        const ts = new Date(start);
-        ts.setDate(start.getDate() + index * 7);
-        const key = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`;
-        const totalPower = buckets.get(key) ?? 0;
-        const kwh = kwhValue(totalPower);
-        return {
-          label: ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-          kwh: Number(kwh.toFixed(1)),
-          cost: formatCost(kwh),
-        };
-      });
-    }
-
-    const bucketMap = new Map<string, number>();
-    allTelemetry.forEach((point) => {
-      const date = new Date(point.ts);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      bucketMap.set(key, (bucketMap.get(key) ?? 0) + point.power);
-    });
-
-    return Array.from({ length: 6 }, (_, index) => {
-      const d = new Date();
-      d.setMonth(d.getMonth() - (5 - index));
-      d.setDate(1);
-      d.setHours(0, 0, 0, 0);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const kwh = kwhValue(bucketMap.get(key) ?? 0);
-      return {
-        label: d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-        kwh: Number(kwh.toFixed(1)),
-        cost: formatCost(kwh),
-      };
-    });
-  }, [allTelemetry, chartRange, tariffPerKwh]);
+  const chartData = getEnergyChartSeries(chartRange);
 
   const monthToDateKwh = siteBreakdown.reduce((sum, site) => sum + site.kwh, 0);
   const peakDemand = devices.length ? Math.max(0, ...devices.map((device) => device.load)) : 0;
@@ -319,6 +407,8 @@ function EnergyPage() {
 
   return (
     <AppShell title="Energy" subtitle={`Consumption analytics · ${platformSettings.timezone}`}>
+      <DeviceComparisonChart />
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Month to date" value={monthToDateKwh.toLocaleString()} unit="kWh" icon={Gauge} tone="primary" />
         <StatCard label="Peak demand" value={peakDemand.toFixed(1)} unit="kW" icon={Zap} tone="warning" />
@@ -333,7 +423,7 @@ function EnergyPage() {
             <p className="text-xs text-muted-foreground">Switch the chart to hours, days, weeks or months</p>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {(["hours", "days", "weeks", "months"] as ChartRange[]).map((range) => (
+            {(["hours", "days", "weeks", "months"] as EnergyChartRange[]).map((range) => (
               <button
                 key={range}
                 type="button"
@@ -352,6 +442,7 @@ function EnergyPage() {
         </div>
 
         <div className="mt-5 h-72">
+          {chartData.length ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ left: -18, right: 4, top: 8 }}>
               <CartesianGrid stroke="var(--border)" vertical={false} />
@@ -363,13 +454,16 @@ function EnergyPage() {
               <Line type="monotone" dataKey="cost" name="Cost (K)" stroke="var(--chart-2)" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
+          ) : (
+            <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+          )}
         </div>
       </section>
 
       <TimeOfUseExplorer />
 
       {/* Detailed Telemetry Table */}
-      {allTelemetry && allTelemetry.length > 0 && (
+      {recentTelemetry && recentTelemetry.length > 0 && (
         <section className="card-surface mt-6 p-5">
           <h2 className="text-sm font-semibold mb-4">Detailed readings</h2>
           <div className="overflow-x-auto">
@@ -383,25 +477,22 @@ function EnergyPage() {
                 </tr>
               </thead>
               <tbody>
-                {allTelemetry.slice(0, 20).map((point) => {
-                  const date = new Date(point.ts);
-                  const dateStr = date.toLocaleDateString();
-                  const timeStr = date.toLocaleTimeString();
+                {recentTelemetry.slice(0, 20).map((point) => {
                   return (
                     <tr key={point.id} className="border-b border-border/50 hover:bg-secondary/30">
                       <td className="py-2 px-3">{point.deviceName || 'Unknown'}</td>
-                      <td className="py-2 px-3 text-muted-foreground">{dateStr} {timeStr}</td>
+                      <td className="py-2 px-3 text-muted-foreground">{formatTelemetryDateTime(point.ts)}</td>
                       <td className="text-right py-2 px-3">{(point.power / 1000).toFixed(2)}</td>
-                      <td className="text-right py-2 px-3">{((point.power / 1000) * 0.25).toFixed(3)}</td>
+                      <td className="text-right py-2 px-3">{getPointKwh(point).toFixed(3)}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          {allTelemetry.length > 20 && (
+          {recentTelemetry.length > 20 && (
             <p className="mt-3 text-xs text-muted-foreground">
-              Showing 20 of {allTelemetry.length} readings. Load more to see earlier data.
+              Showing 20 of {recentTelemetry.length} readings. Load more to see earlier data.
             </p>
           )}
         </section>
@@ -411,6 +502,7 @@ function EnergyPage() {
         <section className="card-surface p-5 lg:col-span-2">
           <h2 className="text-sm font-semibold">Consumption by site</h2>
           <div className="mt-5 h-64">
+            {siteBreakdown.length ? (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={siteBreakdown} margin={{ left: -18, right: 4, top: 8 }}>
                 <CartesianGrid stroke="var(--border)" vertical={false} />
@@ -424,6 +516,9 @@ function EnergyPage() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+            ) : (
+              <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+            )}
           </div>
         </section>
 

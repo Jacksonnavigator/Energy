@@ -13,10 +13,11 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || undefined,
 };
 
-const requiredConfig = Object.entries(firebaseConfig).filter(([, value]) => !value);
+const requiredKeys = ['apiKey', 'authDomain', 'projectId', 'appId'] as const;
+const missingFirebaseKeys = requiredKeys.filter((key) => !firebaseConfig[key]);
 
-export const firebaseReady = requiredConfig.length === 0;
-export const missingFirebaseKeys = requiredConfig.map(([key]) => key);
+export const firebaseReady = missingFirebaseKeys.length === 0;
+export { missingFirebaseKeys };
 export const app = firebaseReady ? (getApps().length ? getApp() : initializeApp(firebaseConfig)) : null;
 export const auth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;

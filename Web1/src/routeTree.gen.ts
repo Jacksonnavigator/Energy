@@ -10,23 +10,16 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as DevicesRouteImport } from './routes/devices'
 import { Route as EnergyRouteImport } from './routes/energy'
 import { Route as ExportsRouteImport } from './routes/exports'
-import { Route as ReliabilityRouteImport } from './routes/reliability'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SustainabilityRouteImport } from './routes/sustainability'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AlertsRoute = AlertsRouteImport.update({
-  id: '/alerts',
-  path: '/alerts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CostsRoute = CostsRouteImport.update({
@@ -49,11 +42,6 @@ const ExportsRoute = ExportsRouteImport.update({
   path: '/exports',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ReliabilityRoute = ReliabilityRouteImport.update({
-  id: '/reliability',
-  path: '/reliability',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -67,35 +55,29 @@ const SustainabilityRoute = SustainabilityRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/alerts': typeof AlertsRoute
   '/costs': typeof CostsRoute
   '/devices': typeof DevicesRoute
   '/energy': typeof EnergyRoute
   '/exports': typeof ExportsRoute
-  '/reliability': typeof ReliabilityRoute
   '/settings': typeof SettingsRoute
   '/sustainability': typeof SustainabilityRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/alerts': typeof AlertsRoute
   '/costs': typeof CostsRoute
   '/devices': typeof DevicesRoute
   '/energy': typeof EnergyRoute
   '/exports': typeof ExportsRoute
-  '/reliability': typeof ReliabilityRoute
   '/settings': typeof SettingsRoute
   '/sustainability': typeof SustainabilityRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/alerts': typeof AlertsRoute
   '/costs': typeof CostsRoute
   '/devices': typeof DevicesRoute
   '/energy': typeof EnergyRoute
   '/exports': typeof ExportsRoute
-  '/reliability': typeof ReliabilityRoute
   '/settings': typeof SettingsRoute
   '/sustainability': typeof SustainabilityRoute
 }
@@ -103,46 +85,38 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/alerts'
     | '/costs'
     | '/devices'
     | '/energy'
     | '/exports'
-    | '/reliability'
     | '/settings'
     | '/sustainability'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/alerts'
     | '/costs'
     | '/devices'
     | '/energy'
     | '/exports'
-    | '/reliability'
     | '/settings'
     | '/sustainability'
   id:
     | '__root__'
     | '/'
-    | '/alerts'
     | '/costs'
     | '/devices'
     | '/energy'
     | '/exports'
-    | '/reliability'
     | '/settings'
     | '/sustainability'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AlertsRoute: typeof AlertsRoute
   CostsRoute: typeof CostsRoute
   DevicesRoute: typeof DevicesRoute
   EnergyRoute: typeof EnergyRoute
   ExportsRoute: typeof ExportsRoute
-  ReliabilityRoute: typeof ReliabilityRoute
   SettingsRoute: typeof SettingsRoute
   SustainabilityRoute: typeof SustainabilityRoute
 }
@@ -154,13 +128,6 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/alerts': {
-      id: '/alerts'
-      path: '/alerts'
-      fullPath: '/alerts'
-      preLoaderRoute: typeof AlertsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/costs': {
@@ -191,13 +158,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ExportsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/reliability': {
-      id: '/reliability'
-      path: '/reliability'
-      fullPath: '/reliability'
-      preLoaderRoute: typeof ReliabilityRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -217,12 +177,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AlertsRoute: AlertsRoute,
   CostsRoute: CostsRoute,
   DevicesRoute: DevicesRoute,
   EnergyRoute: EnergyRoute,
   ExportsRoute: ExportsRoute,
-  ReliabilityRoute: ReliabilityRoute,
   SettingsRoute: SettingsRoute,
   SustainabilityRoute: SustainabilityRoute,
 }

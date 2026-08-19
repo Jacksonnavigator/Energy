@@ -11,6 +11,7 @@ import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } fr
 import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
+import { Toaster } from "@/components/ui/sonner";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { auth, firebaseReady, missingFirebaseKeys } from "../lib/firebase";
 
@@ -246,8 +247,8 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <div className="relative">
-        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />
+        <Toaster />
         <div className="fixed right-4 top-4 z-50">
           <button
             type="button"

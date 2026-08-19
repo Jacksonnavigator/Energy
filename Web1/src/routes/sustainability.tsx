@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -15,7 +15,7 @@ import {
 import { Car, Leaf, Lightbulb, Recycle, Smartphone, TreePine, TrendingDown } from "lucide-react";
 import { AppShell } from "@/components/hydranet/AppShell";
 import { StatCard } from "@/components/hydranet/StatCard";
-import { useHydranetDashboardData, type TimeRange } from "@/lib/dashboard-data";
+import { EMPTY_TELEMETRY_MSG, useHydranetDashboardData, type TimeRange } from "@/lib/dashboard-data";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/sustainability")({
@@ -52,16 +52,31 @@ const priorityStyle: Record<string, string> = {
 };
 
 function SustainabilityPage() {
-  const { devices, renewableMix, emissionsTrend, sustainabilityEquivalents, recommendations: seed, GRID_EMISSION_FACTOR_KGCO2_PER_KWH, currency, allTelemetry } = useHydranetDashboardData();
-  const [timeRange, setTimeRange] = useState<TimeRange>("month");
-  
+  const {
+    devices,
+    renewableMix,
+    getEmissionsSeries,
+    sustainabilityEquivalents,
+    recommendations: seed,
+    GRID_EMISSION_FACTOR_KGCO2_PER_KWH,
+    currency,
+    recentTelemetry, formatTelemetryDateTime,
+    renewableMixConfigured,
+    getPointKwh,
+    EMPTY_TELEMETRY_MSG: emptyMsg,
+  } = useHydranetDashboardData();
+  const [timeRange, setTimeRange] = useState<TimeRange>("day");
+
+  const emissionsTrend = useMemo(() => getEmissionsSeries(timeRange), [getEmissionsSeries, timeRange]);
+  const monthLabel = new Date().toLocaleString("en", { month: "short" });
+
   const energyToday = devices.reduce((s, d) => s + d.todayKwh, 0);
   const co2TodayKg = Math.round(energyToday * GRID_EMISSION_FACTOR_KGCO2_PER_KWH);
-  const renewableShare = renewableMix
-    .filter((r) => r.source === "Hydro" || r.source === "Solar PV" || r.source === "Biogas")
-    .reduce((s, r) => s + r.pct, 0);
-  const lastMonth = emissionsTrend[emissionsTrend.length - 1] ?? { avoided: 0 };
-  const avoidedThisMonth = Math.max(0, lastMonth?.avoided ?? 0);
+  const renewableShare = renewableMix.length
+    ? renewableMix.filter((r) => /hydro|solar|wind|biogas/i.test(r.source)).reduce((s, r) => s + r.pct, 0)
+    : 0;
+  const lastBucket = emissionsTrend[emissionsTrend.length - 1] ?? { avoided: 0 };
+  const avoidedThisMonth = Math.max(0, lastBucket?.avoided ?? 0);
   const totalPotentialSaving = Array.isArray(seed) ? seed.reduce((s, r) => s + r.savingTzs, 0) : 0;
   const totalPotentialCo2 = Array.isArray(seed) ? seed.reduce((s, r) => s + r.co2SavedKg, 0) : 0;
 
@@ -83,7 +98,7 @@ function SustainabilityPage() {
         />
         <StatCard label="Grid intensity" value={String(Math.round(GRID_EMISSION_FACTOR_KGCO2_PER_KWH * 1000))} unit="gCO₂/kWh" icon={Recycle} />
         <StatCard label="Renewable share" value={`${renewableShare}%`} icon={TreePine} />
-        <StatCard label="CO₂ avoided (Aug)" value={avoidedThisMonth.toLocaleString()} unit="kgCO₂" icon={TrendingDown} />
+        <StatCard label={`CO₂ avoided (${monthLabel})`} value={avoidedThisMonth.toLocaleString()} unit="kgCO₂" icon={TrendingDown} />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
@@ -112,29 +127,34 @@ function SustainabilityPage() {
             </div>
           </div>
           <div className="mt-5 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={emissionsTrend} margin={{ left: -18, right: 4, top: 8 }}>
-                <defs>
-                  <linearGradient id="co2Fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="var(--chart-3)" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="var(--chart-3)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="var(--border)" vertical={false} />
-                <XAxis dataKey="m" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-                <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Area type="monotone" dataKey="baseline" name="Baseline" stroke="var(--chart-5)" strokeDasharray="5 4" strokeWidth={2} fill="none" />
-                <Area type="monotone" dataKey="co2" name="Actual" stroke="var(--chart-3)" strokeWidth={2} fill="url(#co2Fill)" />
-              </AreaChart>
-            </ResponsiveContainer>
+            {emissionsTrend.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={emissionsTrend} margin={{ left: -18, right: 4, top: 8 }}>
+                  <defs>
+                    <linearGradient id="co2Fill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--chart-3)" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="var(--chart-3)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="var(--border)" vertical={false} />
+                  <XAxis dataKey="m" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                  <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Area type="monotone" dataKey="baseline" name="Baseline" stroke="var(--chart-5)" strokeDasharray="5 4" strokeWidth={2} fill="none" />
+                  <Area type="monotone" dataKey="co2" name="Actual" stroke="var(--chart-3)" strokeWidth={2} fill="url(#co2Fill)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+            )}
           </div>
         </section>
 
         <section className="card-surface p-5">
           <h2 className="text-sm font-semibold">Energy source mix</h2>
-          <p className="text-xs text-muted-foreground">Share of supply feeding the fleet</p>
+          <p className="text-xs text-muted-foreground">{renewableMixConfigured ? "Share of supply feeding the fleet" : "Today's energy share by device"}</p>
           <div className="mt-3 h-40">
+            {renewableMix.length ? (
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie data={renewableMix} dataKey="pct" nameKey="source" innerRadius={42} outerRadius={62} paddingAngle={2} stroke="var(--border)">
@@ -145,7 +165,13 @@ function SustainabilityPage() {
                 <Tooltip contentStyle={tooltipStyle} formatter={(v: number, n: string) => [`${v}%`, n]} />
               </PieChart>
             </ResponsiveContainer>
+            ) : (
+              <p className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
+                {emptyMsg}
+              </p>
+            )}
           </div>
+          {renewableMix.length > 0 && (
           <ul className="mt-2 space-y-2">
             {renewableMix.map((r) => (
               <li key={r.source} className="flex items-center gap-2.5 text-xs">
@@ -155,12 +181,13 @@ function SustainabilityPage() {
               </li>
             ))}
           </ul>
+          )}
         </section>
       </div>
 
       <section className="card-surface mt-6 p-5">
         <h2 className="text-sm font-semibold">Carbon equivalents</h2>
-        <p className="text-xs text-muted-foreground">What this month's avoided emissions look like in everyday terms</p>
+        <p className="text-xs text-muted-foreground">What today's carbon footprint looks like in everyday terms</p>
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[
             { icon: TreePine, label: "Trees absorbing CO₂ for a year", value: sustainabilityEquivalents.trees.toLocaleString() },
@@ -209,8 +236,7 @@ function SustainabilityPage() {
         />
       </div>
 
-      {/* Detailed Telemetry Emissions Table */}
-      {allTelemetry && allTelemetry.length > 0 && (
+      {recentTelemetry && recentTelemetry.length > 0 && (
         <section className="card-surface mt-6 p-5">
           <h2 className="text-sm font-semibold mb-4">Detailed emissions</h2>
           <div className="overflow-x-auto">
@@ -224,16 +250,13 @@ function SustainabilityPage() {
                 </tr>
               </thead>
               <tbody>
-                {allTelemetry.slice(0, 20).map((point) => {
-                  const date = new Date(point.ts);
-                  const dateStr = date.toLocaleDateString();
-                  const timeStr = date.toLocaleTimeString();
-                  const kwh = (point.power / 1000) * 0.25;
+                {recentTelemetry.slice(0, 20).map((point) => {
+                  const kwh = getPointKwh(point);
                   const co2 = (kwh * GRID_EMISSION_FACTOR_KGCO2_PER_KWH).toFixed(3);
                   return (
                     <tr key={point.id} className="border-b border-border/50 hover:bg-secondary/30">
-                      <td className="py-2 px-3">{point.deviceName || 'Unknown'}</td>
-                      <td className="py-2 px-3 text-muted-foreground">{dateStr} {timeStr}</td>
+                      <td className="py-2 px-3">{point.deviceName || "Unknown"}</td>
+                      <td className="py-2 px-3 text-muted-foreground">{formatTelemetryDateTime(point.ts)}</td>
                       <td className="text-right py-2 px-3">{(point.power / 1000).toFixed(2)}</td>
                       <td className="text-right py-2 px-3">{co2}</td>
                     </tr>
@@ -242,9 +265,9 @@ function SustainabilityPage() {
               </tbody>
             </table>
           </div>
-          {allTelemetry.length > 20 && (
+          {recentTelemetry.length > 20 && (
             <p className="mt-3 text-xs text-muted-foreground">
-              Showing 20 of {allTelemetry.length} readings. Load more to see earlier data.
+              Showing 20 of {recentTelemetry.length} readings. Load more to see earlier data.
             </p>
           )}
         </section>

@@ -1,15 +1,26 @@
-import { collection, collectionGroup, doc, limit, onSnapshot, orderBy, query, where, type Unsubscribe } from 'firebase/firestore';
+import { collection, collectionGroup, doc, limit, onSnapshot, orderBy, query, type Unsubscribe } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { auth, db } from './firebase';
+import {
+  alignBucketStartEat,
+  bucketIntegratedKwh,
+  buildDeviceTelemetryIndex,
+  dedupeTelemetryPoints,
+  getEatHour,
+  integrateKwhBetween,
+  resolveKwhBetween,
+  normalizePowerW,
+  rowKwhFromDeviceIndex,
+} from './telemetry-utils';
 
 export type DeviceStatus = 'online' | 'offline' | 'fault' | 'stale';
 export type CommandState = 'idle' | 'pending' | 'confirmed' | 'failed';
 
 export type TelemetryPoint = {
   id: string;
-  ts: number; // milliseconds
-  power: number; // watts
+  ts: number;
+  power: number;
   voltage?: number;
   current?: number;
   energy?: number;
@@ -30,17 +41,12 @@ export type Device = {
   power_factor: number;
   todayKwh: number;
   lastSeen: string;
+  lastSeenMs: number;
+  ratedKw: number;
   command: CommandState;
   telemetry?: TelemetryPoint[];
-};
-
-export type Alert = {
-  id: string;
-  severity: 'critical' | 'warning' | 'info';
-  title: string;
-  device: string;
-  time: string;
-  acknowledged: boolean;
+  latestReading?: TelemetryPoint;
+  energySource?: string;
 };
 
 export type Recommendation = {
@@ -67,6 +73,12 @@ export type Incident = {
 
 export type TouPeriod = 'peak' | 'standard' | 'offpeak';
 
+export type RenewableMixEntry = {
+  source: string;
+  pct: number;
+  color: string;
+};
+
 export type PlatformSettings = {
   timezone: string;
   currency: 'TZS';
@@ -74,11 +86,83 @@ export type PlatformSettings = {
   maxPower: number;
   maxDailyCost: number;
   maxDailyEnergy: number;
+  orgName: string;
+  primaryContact: string;
+  renewableMix: RenewableMixEntry[];
+  monthlyBudget: number;
+  notifications: {
+    criticalFaults: boolean;
+    thresholdWarnings: boolean;
+    weeklyDigest: boolean;
+    relayConfirmations: boolean;
+  };
 };
 
-export const TARIFF_TZS_PER_KWH = 0;
+export type ExportRecord = {
+  id: string;
+  name: string;
+  format: string;
+  size: string;
+  created: string;
+  status: string;
+};
+
+export type ActivityRecord = {
+  id: string;
+  action: string;
+  target: string;
+  actor: string;
+  time: string;
+  state: string;
+};
+
+export const TARIFF_TZS_PER_KWH = 292;
 export const TIMEZONE = 'Africa/Dar_es_Salaam (UTC+3)';
 export const GRID_EMISSION_FACTOR_KGCO2_PER_KWH = 0.43;
+
+export const TELEMETRY_TIMEZONE = 'Africa/Dar_es_Salaam';
+
+export function formatTelemetryDateTime(ts: number): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: TELEMETRY_TIMEZONE,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(ts));
+}
+
+export function formatTelemetryTime(ts: number): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: TELEMETRY_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(ts));
+}
+
+export function formatTelemetryDate(ts: number): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: TELEMETRY_TIMEZONE,
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(ts));
+}
+
+const ENERGY_SOURCE_COLORS: Record<string, string> = {
+  hydro: 'var(--chart-3)',
+  solar: 'var(--chart-1)',
+  'solar pv': 'var(--chart-1)',
+  wind: 'var(--chart-4)',
+  biogas: 'var(--chart-4)',
+  thermal: 'var(--chart-2)',
+  grid: 'var(--chart-2)',
+  diesel: 'var(--chart-5)',
+  gas: 'var(--chart-5)',
+};
 
 const defaultPlatformSettings: PlatformSettings = {
   timezone: TIMEZONE,
@@ -87,31 +171,70 @@ const defaultPlatformSettings: PlatformSettings = {
   maxPower: 10000,
   maxDailyCost: 50000,
   maxDailyEnergy: 200,
+  orgName: '',
+  primaryContact: '',
+  renewableMix: [],
+  monthlyBudget: 1500000,
+  notifications: {
+    criticalFaults: true,
+    thresholdWarnings: true,
+    weeklyDigest: true,
+    relayConfirmations: false,
+  },
 };
 
+function normalizeRenewableMix(raw: unknown): { mix: RenewableMixEntry[]; configured: boolean } {
+  if (!Array.isArray(raw) || raw.length === 0) return { mix: [], configured: false };
+  return {
+    configured: true,
+    mix: raw.map((entry, index) => {
+      const item = entry as Record<string, unknown>;
+      return {
+        source: String(item.source ?? `Source ${index + 1}`),
+        pct: Number(item.pct ?? 0),
+        color: String(item.color ?? `var(--chart-${(index % 5) + 1})`),
+      };
+    }),
+  };
+}
+
 function normalizePlatformSettings(raw: Record<string, unknown> | null): PlatformSettings {
+  const notifications = (raw?.notifications ?? {}) as Record<string, unknown>;
   return {
     timezone: String(raw?.timezone ?? defaultPlatformSettings.timezone),
     currency: 'TZS',
-    tariffPerKwh: Number(raw?.tariffPerKwh ?? defaultPlatformSettings.tariffPerKwh),
+    tariffPerKwh: Number(raw?.tariffPerKwh ?? defaultPlatformSettings.tariffPerKwh) || TARIFF_TZS_PER_KWH,
     maxPower: Number(raw?.maxPower ?? defaultPlatformSettings.maxPower),
     maxDailyCost: Number(raw?.maxDailyCost ?? defaultPlatformSettings.maxDailyCost),
     maxDailyEnergy: Number(raw?.maxDailyEnergy ?? defaultPlatformSettings.maxDailyEnergy),
+    orgName: String(raw?.orgName ?? defaultPlatformSettings.orgName),
+    primaryContact: String(raw?.primaryContact ?? defaultPlatformSettings.primaryContact),
+    renewableMix: normalizeRenewableMix(raw?.renewableMix).mix,
+    monthlyBudget: Number(raw?.monthlyBudget ?? defaultPlatformSettings.monthlyBudget),
+    notifications: {
+      criticalFaults: Boolean(notifications.criticalFaults ?? defaultPlatformSettings.notifications.criticalFaults),
+      thresholdWarnings: Boolean(notifications.thresholdWarnings ?? defaultPlatformSettings.notifications.thresholdWarnings),
+      weeklyDigest: Boolean(notifications.weeklyDigest ?? defaultPlatformSettings.notifications.weeklyDigest),
+      relayConfirmations: Boolean(notifications.relayConfirmations ?? defaultPlatformSettings.notifications.relayConfirmations),
+    },
   };
 }
 
 export type TimeRange = 'hour' | 'day' | 'week' | 'month';
 
-function getTimeRangeHours(range: TimeRange): number {
+export function getTimeRangeHours(range: TimeRange): number {
   switch (range) {
-    case 'hour': return 1;
-    case 'day': return 24;
-    case 'week': return 7 * 24;
-    case 'month': return 30 * 24;
+    case 'hour':
+      return 1;
+    case 'day':
+      return 24;
+    case 'week':
+      return 7 * 24;
+    case 'month':
+      return 30 * 24;
   }
 }
 
-// Time-of-use tariff bands
 export const touBands: { id: TouPeriod; label: string; window: string; multiplier: number }[] = [
   { id: 'peak', label: 'Peak', window: '18:00 – 22:00', multiplier: 1.35 },
   { id: 'standard', label: 'Standard', window: '06:00 – 18:00', multiplier: 1.0 },
@@ -125,6 +248,8 @@ export const currency = (n: number) =>
   new Intl.NumberFormat('en-TZ', { style: 'currency', currency: 'TZS', maximumFractionDigits: 0 }).format(n);
 
 const STALE_MS = 5 * 60 * 1000;
+const TELEMETRY_LIMIT = 500;
+export const EMPTY_TELEMETRY_MSG = 'No telemetry yet — readings appear when devices report to Firestore';
 
 function normalizeTimestamp(value: unknown): Date | null {
   if (!value) return null;
@@ -147,34 +272,59 @@ function formatRelativeTime(date: Date) {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-function normalizeDevice(id: string, raw: Record<string, unknown>): Device {
+function normalizeDevice(id: string, raw: Record<string, unknown>, ratedKw: number): Device {
   const telemetry = (raw.lastTelemetry || raw.telemetry || {}) as Record<string, unknown>;
-  const updatedAt = normalizeTimestamp(telemetry.ts) || normalizeTimestamp(raw.updatedAt) || null;
+  const updatedAt =
+    normalizeTimestamp(telemetry.ts) ||
+    normalizeTimestamp(telemetry.receivedAt) ||
+    normalizeTimestamp(raw.updatedAt) ||
+    null;
   const stale = !!updatedAt && Date.now() - updatedAt.getTime() > STALE_MS;
   const isOnline = Boolean(raw.isOnline) && !stale;
   const desiredRelay = raw.desiredRelayState ? String(raw.desiredRelayState).toUpperCase() : null;
   const relayState = raw.relayState ? String(raw.relayState).toUpperCase() : null;
   const relay = relayState ? relayState === 'ON' : desiredRelay ? desiredRelay === 'ON' : Boolean(raw.isOn);
-  const power = Number(telemetry.p ?? telemetry.power ?? raw.currentPower ?? 0);
+  const powerW = normalizePowerW(Number(telemetry.p ?? telemetry.power ?? raw.currentPower ?? 0));
   const voltage = Number(telemetry.v ?? telemetry.voltage ?? 0);
   const current = Number(telemetry.i ?? telemetry.current ?? 0);
   const energy = Number(telemetry.e ?? telemetry.energy ?? raw.energyToday ?? 0);
   const site = typeof raw.site === 'string' ? raw.site : 'Primary site';
-  const status: DeviceStatus = !isOnline ? 'offline' : stale ? 'stale' : current > 0 && !relay ? 'fault' : 'online';
+  const deviceRatedKw = Number(raw.ratedPowerKw ?? raw.ratedKw ?? ratedKw);
+  const explicitFault = String(raw.status ?? '').toLowerCase() === 'fault' || raw.fault === true;
+  const status: DeviceStatus = !isOnline ? 'offline' : stale ? 'stale' : explicitFault ? 'fault' : 'online';
+
+  const deviceName = String(raw.name ?? id);
+  const latestReading: TelemetryPoint | undefined = updatedAt
+    ? {
+        id: `${id}-latest`,
+        ts: updatedAt.getTime(),
+        power: powerW,
+        voltage,
+        current,
+        energy,
+        pf: Number(telemetry.pf ?? telemetry.powerFactor ?? 0.95),
+        deviceId: id,
+        deviceName,
+      }
+    : undefined;
 
   return {
     id,
-    name: String(raw.name ?? id),
+    name: deviceName,
     site,
     status,
     relay,
-    load: Number((power / 1000).toFixed(1)),
+    load: Number((powerW / 1000).toFixed(1)),
     voltage,
     current,
     power_factor: Number(telemetry.pf ?? telemetry.powerFactor ?? 0.95),
     todayKwh: energy,
     lastSeen: updatedAt ? formatRelativeTime(updatedAt) : 'No telemetry',
+    lastSeenMs: updatedAt?.getTime() ?? 0,
+    ratedKw: deviceRatedKw,
     command: 'idle',
+    latestReading,
+    energySource: typeof raw.energySource === 'string' ? raw.energySource : undefined,
   };
 }
 
@@ -186,49 +336,320 @@ function deriveCommandState(status?: string): CommandState {
   return 'idle';
 }
 
-function deriveAlerts(devices: Device[], commands: { deviceId: string; status: string }[]): Alert[] {
-  const generated: Alert[] = [];
+type CommandRow = { deviceId: string; cmd: string; status: string; createdAtMs: number };
+
+function deriveDeviceEnergyShare(devices: Device[]): RenewableMixEntry[] {
+  const withEnergy = devices.filter((device) => device.todayKwh > 0);
+  const total = withEnergy.reduce((sum, device) => sum + device.todayKwh, 0);
+  if (total <= 0) return [];
+
+  return withEnergy.map((device, index) => ({
+    source: device.name,
+    pct: Math.round((device.todayKwh / total) * 100),
+    color: `var(--chart-${(index % 5) + 1})`,
+  }));
+}
+
+export type EnergyChartRange = 'hours' | 'days' | 'weeks' | 'months';
+
+function deviceTelemetryPoints(device: Device): TelemetryPoint[] {
+  const points = [...(device.telemetry ?? [])];
+  if (device.latestReading) points.push(device.latestReading);
+  return dedupeTelemetryPoints(points);
+}
+
+function deriveRenewableMixFromDevices(devices: Device[], endMs: number): RenewableMixEntry[] {
+  const startMs = endMs - 24 * 60 * 60 * 1000;
+  const bySource = new Map<string, number>();
 
   devices.forEach((device) => {
-    if (device.status === 'fault') {
-      generated.push({ id: `${device.id}-fault`, severity: 'critical', title: 'Fault condition detected', device: `${device.id} · ${device.name}`, time: device.lastSeen, acknowledged: false });
-    }
-    if (device.status === 'stale') {
-      generated.push({ id: `${device.id}-stale`, severity: 'warning', title: 'Telemetry stale', device: `${device.id} · ${device.name}`, time: device.lastSeen, acknowledged: false });
-    }
-    if (device.status === 'offline') {
-      generated.push({ id: `${device.id}-offline`, severity: 'critical', title: 'Device unreachable', device: `${device.id} · ${device.name}`, time: device.lastSeen, acknowledged: false });
-    }
+    const points = deviceTelemetryPoints(device);
+    let kwh = points.length >= 2 ? integrateKwhBetween(points, startMs, endMs) : 0;
+    if (kwh <= 0) kwh = device.todayKwh;
+    if (kwh <= 0) return;
+    const source = device.energySource?.trim() || 'Unspecified';
+    bySource.set(source, (bySource.get(source) ?? 0) + kwh);
   });
 
-  commands.filter((cmd) => cmd.status === 'pending').forEach((cmd) => {
-    generated.push({ id: `cmd-${cmd.deviceId}`, severity: 'info', title: 'Relay command pending confirmation', device: cmd.deviceId, time: 'Now', acknowledged: false });
-  });
+  const total = Array.from(bySource.values()).reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return [];
 
-  return generated.length ? generated.slice(0, 8) : [];
+  return Array.from(bySource.entries()).map(([source, kwh], index) => ({
+    source,
+    pct: Math.round((kwh / total) * 100),
+    color: ENERGY_SOURCE_COLORS[source.toLowerCase()] ?? `var(--chart-${(index % 5) + 1})`,
+  }));
 }
+
+export function getEnergyChartSeries(
+  telemetry: TelemetryPoint[],
+  range: EnergyChartRange,
+  tariffPerKwh: number,
+): Array<{ label: string; kwh: number; cost: number }> {
+  const hasUsableData =
+    telemetry.length >= 2 ||
+    telemetry.some((p) => p.power > 0 || (p.energy ?? 0) > 0);
+  if (!hasUsableData) return [];
+
+  const endMs = Math.max(Date.now(), ...telemetry.map((point) => point.ts));
+
+  if (range === 'hours') {
+    const startMs = endMs - 24 * 60 * 60 * 1000;
+    return bucketIntegratedKwh(telemetry, 60 * 60 * 1000, startMs, endMs, true).map(({ bucketStart, kwh }) => ({
+      label: formatTelemetryTime(bucketStart),
+      kwh: Number(kwh.toFixed(1)),
+      cost: Number((kwh * tariffPerKwh).toFixed(1)),
+    }));
+  }
+
+  if (range === 'days') {
+    const startMs = endMs - 7 * 24 * 60 * 60 * 1000;
+    return bucketIntegratedKwh(telemetry, 24 * 60 * 60 * 1000, startMs, endMs, true).map(({ bucketStart, kwh }) => ({
+      label: formatTelemetryDate(bucketStart),
+      kwh: Number(kwh.toFixed(1)),
+      cost: Number((kwh * tariffPerKwh).toFixed(1)),
+    }));
+  }
+
+  if (range === 'weeks') {
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    const startMs = endMs - 6 * weekMs;
+    return bucketIntegratedKwh(telemetry, weekMs, startMs, endMs, true).map(({ bucketStart, kwh }) => ({
+      label: formatTelemetryDate(bucketStart),
+      kwh: Number(kwh.toFixed(1)),
+      cost: Number((kwh * tariffPerKwh).toFixed(1)),
+    }));
+  }
+
+  const monthMs = 30 * 24 * 60 * 60 * 1000;
+  const minTs = Math.min(...telemetry.map((point) => point.ts));
+  const spanMs = endMs - minTs;
+  const monthCount = Math.min(6, Math.max(1, Math.ceil(spanMs / monthMs)));
+  const startMs = endMs - monthCount * monthMs;
+  return bucketIntegratedKwh(telemetry, monthMs, startMs, endMs, true).map(({ bucketStart, kwh }) => ({
+    label: new Intl.DateTimeFormat('en-GB', {
+      timeZone: TELEMETRY_TIMEZONE,
+      month: 'short',
+      year: 'numeric',
+    }).format(new Date(bucketStart)),
+    kwh: Number(kwh.toFixed(1)),
+    cost: Number((kwh * tariffPerKwh).toFixed(1)),
+  }));
+}
+
+
+export type ComparisonPeriod = 'hour' | 'day' | 'week' | 'month' | 'custom';
+
+function getComparisonBucketMs(spanMs: number): number {
+  if (spanMs <= 2 * 60 * 60 * 1000) return 5 * 60 * 1000;
+  if (spanMs <= 36 * 60 * 60 * 1000) return 60 * 60 * 1000;
+  if (spanMs <= 45 * 24 * 60 * 60 * 1000) return 24 * 60 * 60 * 1000;
+  return 7 * 24 * 60 * 60 * 1000;
+}
+
+export function getComparisonPeriodRange(
+  period: ComparisonPeriod,
+  custom?: { fromMs: number; toMs: number },
+): { startMs: number; endMs: number } {
+  const now = Date.now();
+  switch (period) {
+    case 'hour':
+      return { startMs: now - 60 * 60 * 1000, endMs: now };
+    case 'day':
+      return { startMs: now - 24 * 60 * 60 * 1000, endMs: now };
+    case 'week':
+      return { startMs: now - 7 * 24 * 60 * 60 * 1000, endMs: now };
+    case 'month':
+      return { startMs: now - 30 * 24 * 60 * 60 * 1000, endMs: now };
+    case 'custom':
+      if (custom && custom.toMs > custom.fromMs) return { startMs: custom.fromMs, endMs: custom.toMs };
+      return { startMs: now - 7 * 24 * 60 * 60 * 1000, endMs: now };
+  }
+}
+
+export function getDeviceComparisonSeries(
+  devices: Device[],
+  telemetryByDevice: Map<string, TelemetryPoint[]>,
+  deviceIds: string[],
+  startMs: number,
+  endMs: number,
+): Array<{ label: string; total: number; [deviceId: string]: string | number }> {
+  if (endMs <= startMs) return [];
+
+  const selected = deviceIds.length
+    ? devices.filter((device) => deviceIds.includes(device.id))
+    : devices;
+  if (!selected.length) return [];
+
+  const bucketMs = getComparisonBucketMs(endMs - startMs);
+  const spanMs = endMs - startMs;
+  const formatLabel = (ts: number) =>
+    spanMs <= 36 * 60 * 60 * 1000 ? formatTelemetryTime(ts) : formatTelemetryDate(ts);
+
+  const alignedStart = alignBucketStartEat(startMs, bucketMs);
+  const rows: Array<{ label: string; total: number; [deviceId: string]: string | number }> = [];
+
+  for (let t = alignedStart; t < endMs; t += bucketMs) {
+    const bucketEnd = Math.min(t + bucketMs, endMs);
+    const row: { label: string; total: number; [deviceId: string]: string | number } = {
+      label: formatLabel(t),
+      total: 0,
+    };
+
+    selected.forEach((device) => {
+      const fromMap = telemetryByDevice.get(device.id) ?? [];
+      const points = dedupeTelemetryPoints([...deviceTelemetryPoints(device), ...fromMap]);
+      let kwh = resolveKwhBetween(points, t, bucketEnd);
+      if (kwh <= 0) {
+        const inBucket = points.filter((p) => p.ts >= t && p.ts <= bucketEnd);
+        const bucketEnergy = inBucket.find((p) => (p.energy ?? 0) > 0)?.energy;
+        if (bucketEnergy) kwh = bucketEnergy;
+        else if (inBucket.length && device.todayKwh > 0) kwh = device.todayKwh;
+      }
+      row[device.id] = Number(kwh.toFixed(2));
+      row.total += kwh;
+    });
+
+    row.total = Number(row.total.toFixed(2));
+    rows.push(row);
+  }
+
+  const allZero = !rows.length || rows.every((row) => row.total === 0);
+  if (allZero && selected.some((d) => d.todayKwh > 0)) {
+    const bucketStart = alignBucketStartEat(
+      Math.max(...selected.map((d) => d.lastSeenMs || d.latestReading?.ts || endMs)),
+      bucketMs,
+    );
+    const row: { label: string; total: number; [deviceId: string]: string | number } = {
+      label: formatLabel(bucketStart),
+      total: 0,
+    };
+    selected.forEach((device) => {
+      const kwh = Math.max(0, device.todayKwh);
+      row[device.id] = Number(kwh.toFixed(2));
+      row.total += kwh;
+    });
+    row.total = Number(row.total.toFixed(2));
+    return [row];
+  }
+
+  return rows;
+}
+
+function buildCostTrend(
+  telemetry: TelemetryPoint[],
+  tariffPerKwh: number,
+  monthlyBudget: number,
+): Array<{ m: string; cost: number; budget: number }> {
+  const hasUsableData =
+    telemetry.length >= 2 ||
+    telemetry.some((p) => p.power > 0 || (p.energy ?? 0) > 0);
+  if (!hasUsableData) return [];
+
+  const minTs = Math.min(...telemetry.map((point) => point.ts));
+  const maxTs = Math.max(...telemetry.map((point) => point.ts));
+  const spanMs = maxTs - minTs;
+  const twoMonthsMs = 62 * 24 * 60 * 60 * 1000;
+  const endMs = Date.now();
+
+  if (spanMs < twoMonthsMs) {
+    const startMs = endMs - 30 * 24 * 60 * 60 * 1000;
+    const dailyBudget = monthlyBudget / 30;
+    return bucketIntegratedKwh(telemetry, 24 * 60 * 60 * 1000, startMs, endMs, true)
+      .map(({ bucketStart, kwh }) => ({
+        m: formatTelemetryDate(bucketStart),
+        cost: Number((kwh * tariffPerKwh).toFixed(0)),
+        budget: Number(dailyBudget.toFixed(0)),
+      }))
+      .filter((bucket) => bucket.cost > 0);
+  }
+
+  const monthMs = 30 * 24 * 60 * 60 * 1000;
+  const startMs = endMs - 6 * monthMs;
+  return bucketIntegratedKwh(telemetry, monthMs, startMs, endMs, true)
+    .map(({ bucketStart, kwh }) => ({
+      m: new Intl.DateTimeFormat('en-GB', {
+        timeZone: TELEMETRY_TIMEZONE,
+        month: 'short',
+        year: 'numeric',
+      }).format(new Date(bucketStart)),
+      cost: Number((kwh * tariffPerKwh).toFixed(0)),
+      budget: Number(monthlyBudget.toFixed(0)),
+    }))
+    .filter((bucket) => bucket.cost > 0);
+}
+
+export function emissionsSeries(
+  telemetry: TelemetryPoint[],
+  timeRange: TimeRange,
+  emissionFactor = GRID_EMISSION_FACTOR_KGCO2_PER_KWH,
+): Array<{ m: string; co2: number; baseline: number; avoided: number }> {
+  const hasUsableData =
+    telemetry.length >= 2 ||
+    telemetry.some((p) => p.power > 0 || (p.energy ?? 0) > 0);
+  if (!hasUsableData) return [];
+
+  const now = Date.now();
+  const hours = getTimeRangeHours(timeRange);
+  const startMs = now - hours * 60 * 60 * 1000;
+  const endMs = now;
+
+  let bucketMs: number;
+  let formatLabel: (ts: number) => string;
+
+  if (timeRange === 'hour') {
+    bucketMs = 5 * 60 * 1000;
+    formatLabel = (ts) => formatTelemetryTime(ts);
+  } else if (timeRange === 'day') {
+    bucketMs = 60 * 60 * 1000;
+    formatLabel = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } else {
+    bucketMs = 24 * 60 * 60 * 1000;
+    formatLabel = (ts) => formatTelemetryDate(ts);
+  }
+
+  const buckets = bucketIntegratedKwh(telemetry, bucketMs, startMs, endMs, bucketMs >= 60 * 60 * 1000);
+  if (!buckets.length) return [];
+
+  return buckets.map(({ bucketStart, kwh }, index, arr) => {
+    const co2 = Math.round(kwh * emissionFactor);
+    const prevKwh = index > 0 ? arr[index - 1].kwh : kwh;
+    const baseline = Math.round(prevKwh * emissionFactor);
+    const avoided = baseline > co2 ? baseline - co2 : 0;
+    return { m: formatLabel(bucketStart), co2, baseline, avoided };
+  });
+}
+
+export { sendRelayCommand, savePlatformSettings } from './firebase-api';
 
 export function useHydranetDashboardData() {
   const [devices, setDevices] = useState<Device[]>([]);
-  const [commands, setCommands] = useState<Array<{ deviceId: string; cmd: string; status: string; createdAtMs: number }>>([]);
+  const [commands, setCommands] = useState<CommandRow[]>([]);
   const [platformSettings, setPlatformSettings] = useState<PlatformSettings>(defaultPlatformSettings);
   const [telemetryMap, setTelemetryMap] = useState<Map<string, TelemetryPoint[]>>(new Map());
+  const [isLoading, setIsLoading] = useState(true);
+  const [renewableMixConfigured, setRenewableMixConfigured] = useState(false);
   const commandsRef = useRef(commands);
   const devicesRef = useRef(devices);
   const telemetryMapRef = useRef(telemetryMap);
+  const platformSettingsRef = useRef(platformSettings);
   const telemetryUnsubsRef = useRef<Map<string, Unsubscribe>>(new Map());
+  const devicesLoadedRef = useRef(false);
 
   useEffect(() => {
     commandsRef.current = commands;
     devicesRef.current = devices;
     telemetryMapRef.current = telemetryMap;
-  }, [commands, devices, telemetryMap]);
+    platformSettingsRef.current = platformSettings;
+  }, [commands, devices, telemetryMap, platformSettings]);
 
   useEffect(() => {
     if (!db) {
       setDevices([]);
       setCommands([]);
       setPlatformSettings(defaultPlatformSettings);
+      setRenewableMixConfigured(false);
+      setIsLoading(false);
       return undefined;
     }
 
@@ -242,17 +663,18 @@ export function useHydranetDashboardData() {
       existing?.();
 
       const unsub = onSnapshot(
-        query(collection(db, 'devices', deviceId, 'telemetry'), orderBy('ts', 'desc'), limit(72)),
+        query(collection(db, 'devices', deviceId, 'telemetry'), orderBy('ts', 'desc'), limit(TELEMETRY_LIMIT)),
         (snapshot) => {
           const deviceName = devicesRef.current.find((d) => d.id === deviceId)?.name ?? deviceId;
           const points = snapshot.docs
             .map((docSnap) => {
               const raw = docSnap.data() as Record<string, unknown>;
-              const ts = normalizeTimestamp(raw.ts) ?? new Date();
+              const ts = normalizeTimestamp(raw.ts) ?? normalizeTimestamp(raw.receivedAt);
+              if (!ts) return null;
               return {
                 id: docSnap.id,
                 ts: ts.getTime(),
-                power: Number(raw.p ?? raw.power ?? 0),
+                power: normalizePowerW(Number(raw.p ?? raw.power ?? 0)),
                 voltage: Number(raw.v ?? raw.voltage ?? 0),
                 current: Number(raw.i ?? raw.current ?? 0),
                 energy: Number(raw.e ?? raw.energy ?? 0),
@@ -261,6 +683,7 @@ export function useHydranetDashboardData() {
                 deviceName,
               };
             })
+            .filter((point): point is TelemetryPoint => point !== null)
             .sort((a, b) => a.ts - b.ts);
 
           setTelemetryMap((prev) => {
@@ -287,10 +710,16 @@ export function useHydranetDashboardData() {
       unsubDevices = onSnapshot(
         collection(db, 'devices'),
         (snapshot) => {
+          if (!devicesLoadedRef.current) {
+            devicesLoadedRef.current = true;
+            setIsLoading(false);
+          }
+
           const commandMap = new Map(commandsRef.current.map((command) => [command.deviceId, command]));
+          const ratedKw = platformSettingsRef.current.maxPower / 1000;
           const next = snapshot.docs.map((docSnap) => {
             const raw = docSnap.data() as Record<string, unknown>;
-            const normalized = normalizeDevice(docSnap.id, raw);
+            const normalized = normalizeDevice(docSnap.id, raw, ratedKw);
             const latest = commandMap.get(docSnap.id);
             if (latest) normalized.command = deriveCommandState(latest.status);
             normalized.telemetry = telemetryMapRef.current.get(docSnap.id) || [];
@@ -298,13 +727,14 @@ export function useHydranetDashboardData() {
           });
 
           setDevices(next);
-          snapshot.docs.forEach((doc) => {
-            attachTelemetryListener(doc.id);
+          snapshot.docs.forEach((docSnap) => {
+            attachTelemetryListener(docSnap.id);
           });
         },
         (error) => {
           console.warn('Unable to load devices from Firestore:', error);
           setDevices([]);
+          setIsLoading(false);
         },
       );
     };
@@ -341,11 +771,15 @@ export function useHydranetDashboardData() {
     unsubPlatform = onSnapshot(
       doc(db, 'appConfig', 'platform'),
       (snapshot) => {
-        setPlatformSettings(normalizePlatformSettings(snapshot.exists() ? (snapshot.data() as Record<string, unknown>) : null));
+        const raw = snapshot.exists() ? (snapshot.data() as Record<string, unknown>) : null;
+        const { mix, configured } = normalizeRenewableMix(raw?.renewableMix);
+        setRenewableMixConfigured(configured);
+        setPlatformSettings({ ...normalizePlatformSettings(raw), renewableMix: mix });
       },
       (error) => {
         console.warn('Unable to load platform settings:', error);
         setPlatformSettings(defaultPlatformSettings);
+        setRenewableMixConfigured(false);
       },
     );
 
@@ -357,129 +791,129 @@ export function useHydranetDashboardData() {
       telemetryUnsubsRef.current.forEach((unsub) => unsub());
       telemetryUnsubsRef.current.clear();
     };
-  }, [auth]);
-
-  const alerts = useMemo(() => deriveAlerts(devices, commands.map(({ deviceId, status }) => ({ deviceId, status }))), [devices, commands]);
+  }, []);
 
   const tariffPerKwh = platformSettings.tariffPerKwh || TARIFF_TZS_PER_KWH;
 
-  const allTelemetry = useMemo(
-    () => Array.from(telemetryMap.values()).flat().sort((a, b) => a.ts - b.ts),
-    [telemetryMap],
+  const allTelemetry = useMemo(() => {
+    const fromSubcollections = Array.from(telemetryMap.values()).flat();
+    const fallbacks = devices
+      .filter((device) => device.latestReading)
+      .map((device) => device.latestReading as TelemetryPoint);
+    return dedupeTelemetryPoints([...fromSubcollections, ...fallbacks]);
+  }, [telemetryMap, devices]);
+
+  const recentTelemetry = useMemo(
+    () => [...allTelemetry].sort((a, b) => b.ts - a.ts),
+    [allTelemetry],
+  );
+
+  const deviceTelemetryIndex = useMemo(() => buildDeviceTelemetryIndex(allTelemetry), [allTelemetry]);
+
+  const getPointKwh = useCallback(
+    (point: TelemetryPoint) => rowKwhFromDeviceIndex(deviceTelemetryIndex, point),
+    [deviceTelemetryIndex],
+  );
+
+  const getEmissionsSeries = useCallback(
+    (timeRange: TimeRange) => emissionsSeries(allTelemetry, timeRange, GRID_EMISSION_FACTOR_KGCO2_PER_KWH),
+    [allTelemetry],
+  );
+
+  const getEnergyChartSeriesForRange = useCallback(
+    (range: EnergyChartRange) => getEnergyChartSeries(allTelemetry, range, tariffPerKwh),
+    [allTelemetry, tariffPerKwh],
+  );
+
+  const getDeviceComparisonSeriesForRange = useCallback(
+    (deviceIds: string[], startMs: number, endMs: number) =>
+      getDeviceComparisonSeries(devices, telemetryMap, deviceIds, startMs, endMs),
+    [devices, telemetryMap],
   );
 
   const consumptionSeries = useMemo(() => {
-    if (!allTelemetry.length) return [];
+    const now = Date.now();
+    const startMs = now - 24 * 60 * 60 * 1000;
+    const bucketMs = 60 * 60 * 1000;
+    let buckets = bucketIntegratedKwh(allTelemetry, bucketMs, startMs, now, true).map(({ bucketStart, kwh }) => ({
+      t: formatTelemetryTime(bucketStart),
+      kwh: Number(kwh.toFixed(1)),
+      cost: Number((kwh * tariffPerKwh).toFixed(1)),
+    }));
 
-    const grouped = new Map<number, number>();
-    allTelemetry.forEach((point) => {
-      const date = new Date(point.ts);
-      const hour = date.getHours();
-      grouped.set(hour, (grouped.get(hour) ?? 0) + point.power / 1000);
-    });
+    const allZero = buckets.length === 0 || buckets.every((bucket) => bucket.kwh === 0);
+    const todayKwhTotal = devices.reduce((sum, device) => sum + Math.max(0, device.todayKwh), 0);
 
-    return Array.from({ length: 24 }, (_, hour) => {
-      const kw = grouped.get(hour) ?? 0;
-      const kwh = kw * 0.25;
-      return {
-        t: `${String(hour).padStart(2, '0')}:00`,
-        kwh: Number(Math.max(0, kwh).toFixed(1)),
-        cost: Number((kwh * tariffPerKwh).toFixed(1)),
-      };
-    });
-  }, [allTelemetry, tariffPerKwh]);
+    if (allZero && todayKwhTotal > 0) {
+      const timestamps = allTelemetry.length
+        ? allTelemetry.map((point) => point.ts)
+        : devices.filter((device) => device.lastSeenMs > 0).map((device) => device.lastSeenMs);
+
+      if (timestamps.length > 0) {
+        const hourWeights = new Map<number, number>();
+        timestamps.forEach((ts) => {
+          const hourStart = alignBucketStartEat(ts, bucketMs);
+          hourWeights.set(hourStart, (hourWeights.get(hourStart) ?? 0) + 1);
+        });
+        const totalWeight = Array.from(hourWeights.values()).reduce((sum, weight) => sum + weight, 0);
+        buckets = Array.from(hourWeights.entries())
+          .sort(([a], [b]) => a - b)
+          .map(([hourStart, weight]) => {
+            const kwh = (todayKwhTotal * weight) / totalWeight;
+            return {
+              t: formatTelemetryTime(hourStart),
+              kwh: Number(kwh.toFixed(1)),
+              cost: Number((kwh * tariffPerKwh).toFixed(1)),
+            };
+          });
+      } else {
+        const currentHourStart = alignBucketStartEat(now, bucketMs);
+        buckets = [{
+          t: formatTelemetryTime(currentHourStart),
+          kwh: Number(todayKwhTotal.toFixed(1)),
+          cost: Number((todayKwhTotal * tariffPerKwh).toFixed(1)),
+        }];
+      }
+    }
+
+    return buckets;
+  }, [allTelemetry, devices, tariffPerKwh]);
 
   const siteBreakdown = useMemo(() => {
     if (!devices.length) return [];
+    const now = Date.now();
+    const startMs = now - 24 * 60 * 60 * 1000;
     const grouped = new Map<string, { site: string; kwh: number; cost: number }>();
     devices.forEach((device) => {
+      const points = deviceTelemetryPoints(device);
+      let kwh = points.length >= 2 ? integrateKwhBetween(points, startMs, now) : 0;
+      if (kwh <= 0) kwh = device.todayKwh;
       const existing = grouped.get(device.site) ?? { site: device.site, kwh: 0, cost: 0 };
-      existing.kwh += device.todayKwh;
-      existing.cost += device.todayKwh * tariffPerKwh;
+      existing.kwh += kwh;
+      existing.cost += kwh * tariffPerKwh;
       grouped.set(device.site, existing);
     });
     return Array.from(grouped.values()).sort((a, b) => b.kwh - a.kwh);
   }, [devices, tariffPerKwh]);
 
-  const costTrend = useMemo(() => {
-    // Only render cost trend if we have real telemetry data
-    if (!allTelemetry.length) return [];
-
-    const bucketed = new Map<string, number>();
-    allTelemetry.forEach((point) => {
-      const date = new Date(point.ts);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      bucketed.set(key, (bucketed.get(key) ?? 0) + (point.power / 1000 * 0.25)); // Convert to kWh
-    });
-
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const now = new Date();
-    return months.map((m, index) => {
-      const date = new Date(now.getFullYear(), index, 1);
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      const kwh = bucketed.get(key) ?? 0;
-      return { m, cost: Number((kwh * tariffPerKwh).toFixed(0)), budget: Number(((kwh || 1) * tariffPerKwh * 1.1).toFixed(0)) };
-    }).slice(Math.max(0, now.getMonth() - 5));
-  }, [allTelemetry, tariffPerKwh]);
+  const costTrend = useMemo(
+    () => buildCostTrend(allTelemetry, tariffPerKwh, platformSettings.monthlyBudget),
+    [allTelemetry, tariffPerKwh, platformSettings.monthlyBudget],
+  );
 
   const renewableMix = useMemo(() => {
-    // Only render renewable mix if we have real telemetry data
-    if (!allTelemetry.length) {
-      return [
-        { source: 'Hydro', pct: 0, color: 'var(--chart-3)' },
-        { source: 'Solar PV', pct: 0, color: 'var(--chart-1)' },
-        { source: 'Thermal (gas/diesel)', pct: 0, color: 'var(--chart-2)' },
-        { source: 'Biogas', pct: 0, color: 'var(--chart-4)' },
-      ];
+    if (renewableMixConfigured && platformSettings.renewableMix.length) {
+      return platformSettings.renewableMix;
     }
+    const deviceShare = deriveDeviceEnergyShare(devices);
+    if (deviceShare.length) return deviceShare;
+    return deriveRenewableMixFromDevices(devices, Date.now());
+  }, [renewableMixConfigured, platformSettings.renewableMix, devices]);
 
-    // Real renewable mix data should come from Firestore appConfig/platform or device records
-    // For now, return default mix since we don't have real renewable source tracking
-    return [
-      { source: 'Hydro', pct: 0, color: 'var(--chart-3)' },
-      { source: 'Solar PV', pct: 0, color: 'var(--chart-1)' },
-      { source: 'Thermal (gas/diesel)', pct: 100, color: 'var(--chart-2)' },
-      { source: 'Biogas', pct: 0, color: 'var(--chart-4)' },
-    ];
-  }, [allTelemetry]);
-
-  const emissionsTrend = useMemo(() => {
-    // Only render emissions trend if we have real telemetry data
-    if (!allTelemetry.length) {
-      return [];
-    }
-
-    // Group telemetry by month to show real emissions trend
-    const byMonth = new Map<string, number>();
-    allTelemetry.forEach((point) => {
-      const date = new Date(point.ts);
-      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      byMonth.set(monthKey, (byMonth.get(monthKey) ?? 0) + point.power / 1000 * 0.25); // Convert to kWh
-    });
-
-    // If we only have data from one month, return empty (need multiple months for trend)
-    if (byMonth.size < 2) {
-      return [];
-    }
-
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const now = new Date();
-    
-    // Use last 6 months of real data
-    return Array.from(byMonth.entries())
-      .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
-      .slice(-6)
-      .map(([monthKey, kwh]) => {
-        const [year, month] = monthKey.split('-');
-        const monthIndex = Number(month) - 1;
-        const monthName = months[monthIndex];
-        const co2 = Math.round(kwh * GRID_EMISSION_FACTOR_KGCO2_PER_KWH);
-        // Baseline is just what we consumed * 1.15 (15% more if we didn't optimize)
-        const baseline = Math.round(co2 * 1.15);
-        const avoided = Math.max(0, baseline - co2);
-        return { m: monthName, co2, baseline, avoided };
-      });
-  }, [allTelemetry, GRID_EMISSION_FACTOR_KGCO2_PER_KWH]);
+  const emissionsTrend = useMemo(
+    () => getEmissionsSeries('day'),
+    [getEmissionsSeries],
+  );
 
   const recommendations = useMemo(() => {
     if (!devices.length) return [] as Recommendation[];
@@ -502,122 +936,129 @@ export function useHydranetDashboardData() {
       }
 
       if (device.status === 'stale' && device.todayKwh > 0) {
+        const savingKwh = Math.max(25, Math.round(device.todayKwh * 0.08));
         generated.push({
           id: `rec-${device.id}-schedule`,
           title: 'Reschedule idle overnight load',
           detail: `${device.name} has stale telemetry and some overnight draw. Confirm the schedule and avoid unnecessary off-hours consumption.`,
           device: `${device.id} · ${device.name}`,
-          savingKwh: Math.max(25, Math.round(device.todayKwh * 0.08)),
-          savingTzs: Math.max(15000, Math.round(device.todayKwh * 0.08 * platformSettings.tariffPerKwh || 0)),
-          co2SavedKg: Math.max(0, Math.round(Math.max(25, Math.round(device.todayKwh * 0.08)) * GRID_EMISSION_FACTOR_KGCO2_PER_KWH)),
+          savingKwh,
+          savingTzs: Math.max(15000, Math.round(savingKwh * tariffPerKwh)),
+          co2SavedKg: Math.max(0, Math.round(savingKwh * GRID_EMISSION_FACTOR_KGCO2_PER_KWH)),
           priority: 'medium',
           category: 'Scheduling',
         });
       }
+
+      if (device.power_factor > 0 && device.power_factor < 0.9) {
+        const savingKwh = Math.max(10, Math.round(device.todayKwh * 0.05));
+        generated.push({
+          id: `rec-${device.id}-pf`,
+          title: 'Improve power factor',
+          detail: `${device.name} is operating below 0.9 PF. Add correction or reduce inductive load to cut losses.`,
+          device: `${device.id} · ${device.name}`,
+          savingKwh,
+          savingTzs: Math.round(savingKwh * tariffPerKwh),
+          co2SavedKg: Math.round(savingKwh * GRID_EMISSION_FACTOR_KGCO2_PER_KWH),
+          priority: 'medium',
+          category: 'Power quality',
+        });
+      }
     });
 
-    return generated.length ? generated.slice(0, 4) : [] as Recommendation[];
-  }, [devices, GRID_EMISSION_FACTOR_KGCO2_PER_KWH, platformSettings.tariffPerKwh]);
-
-  const incidentHistory = useMemo(() => {
-    // Only show incidents based on real device status from Firestore
-    if (!devices.length) return [] as Incident[];
-
-    const items: Incident[] = devices
-      .filter((device) => device.status === 'fault' || device.status === 'offline' || device.status === 'stale')
-      .map((device) => ({
-        id: `INC-${device.id}`,
-        title: device.status === 'fault' ? 'Reactive or protection alert' : device.status === 'offline' ? 'Device unreachable' : 'Telemetry stale',
-        device: `${device.id} · ${device.name}`,
-        severity: device.status === 'fault' ? 'critical' : device.status === 'offline' ? 'critical' : 'warning',
-        detected: 'Recent', // Without real incident timestamps from Firestore, just show recent
-        duration: '—', // Without real incident duration, omit
-        rootCause: device.status === 'fault' ? 'Load protection threshold exceeded' : device.status === 'offline' ? 'Gateway or network interruption' : 'Polling timeout',
-      }));
-
-    return items;
-  }, [devices]);
-
-  const safetyStatus = useMemo(() => ({
-    relaySafelyControlled: devices.filter((device) => device.relay).length,
-    faultProtectionArmed: devices.filter((device) => device.status !== 'fault').length,
-    overloadProtected: devices.filter((device) => device.load && device.load < 100).length,
-    groundFaults: devices.filter((device) => device.status === 'fault').length,
-    lastSafetyAudit: platformSettings.timezone || 'Unknown',
-  }), [devices, platformSettings.timezone]);
-
-  const uptimeBySite = useMemo(() => {
-    if (!devices.length) return [] as Array<{ site: string; uptime: number; sla: number }>;
-    const grouped = new Map<string, { site: string; uptime: number; sla: number }>();
-    devices.forEach((device) => {
-      const entry = grouped.get(device.site) ?? { site: device.site, uptime: 100, sla: 99.5 };
-      entry.uptime = device.status === 'offline' ? Math.min(entry.uptime, 99.0) : entry.uptime;
-      grouped.set(device.site, entry);
-    });
-    return Array.from(grouped.values());
-  }, [devices]);
+    return generated.slice(0, 4);
+  }, [devices, tariffPerKwh]);
 
   const hourlyProfile = useMemo(() => {
-    if (!allTelemetry.length) return [];
+    const now = Date.now();
+    const startMs = now - 24 * 60 * 60 * 1000;
+    let buckets = bucketIntegratedKwh(allTelemetry, 60 * 60 * 1000, startMs, now, true);
 
-    const grouped = new Map<number, number>();
-    allTelemetry.forEach((point) => {
-      const date = new Date(point.ts);
-      const hour = date.getHours();
-      grouped.set(hour, (grouped.get(hour) ?? 0) + point.power / 1000);
-    });
+    const allZero = !buckets.length || buckets.every((b) => b.kwh === 0);
+    const todayKwhTotal = devices.reduce((sum, d) => sum + Math.max(0, d.todayKwh), 0);
 
-    return Array.from({ length: 24 }, (_, hour) => {
-      const kw = grouped.get(hour) ?? 0;
-      const kwh = kw * 0.25;
+    if (allZero && todayKwhTotal > 0) {
+      const hourStart = alignBucketStartEat(now, 60 * 60 * 1000);
+      buckets = [{ bucketStart: hourStart, kwh: todayKwhTotal }];
+    } else if (allTelemetry.length < 2 && todayKwhTotal > 0) {
+      const ts = devices.find((d) => d.lastSeenMs)?.lastSeenMs ?? now;
+      const hourStart = alignBucketStartEat(ts, 60 * 60 * 1000);
+      buckets = [{ bucketStart: hourStart, kwh: todayKwhTotal }];
+    }
+
+    if (!buckets.length) return [];
+    return buckets.map(({ bucketStart, kwh }, index) => {
+      const hour = getEatHour(bucketStart);
       const period = periodOf(hour);
       const multiplier = touBands.find((band) => band.id === period)?.multiplier ?? 1;
-      const cost = kwh * tariffPerKwh * multiplier;
       return {
-        hour,
-        t: `${String(hour).padStart(2, '0')}:00`,
-        kwh: Number(Math.max(0, kwh).toFixed(1)),
-        cost: Number(cost.toFixed(0)),
+        hour: index,
+        t: formatTelemetryTime(bucketStart),
+        kwh: Number(kwh.toFixed(1)),
+        cost: Number((kwh * tariffPerKwh * multiplier).toFixed(0)),
         period,
       };
     });
-  }, [allTelemetry, tariffPerKwh]);
+  }, [allTelemetry, tariffPerKwh, devices]);
+
+  const exportsHistory = useMemo((): ExportRecord[] => {
+    return commands.slice(0, 10).map((cmd) => ({
+      id: `export-${cmd.deviceId}-${cmd.createdAtMs}`,
+      name: `Relay ${cmd.cmd} · ${cmd.deviceId}`,
+      format: 'CSV',
+      size: '—',
+      created: formatRelativeTime(new Date(cmd.createdAtMs)),
+      status: cmd.status === 'failed' ? 'Failed' : 'Ready',
+    }));
+  }, [commands]);
+
+  const recentActivity = useMemo((): ActivityRecord[] => {
+    return commands.slice(0, 20).map((cmd) => ({
+      id: `act-${cmd.deviceId}-${cmd.createdAtMs}`,
+      action: cmd.cmd === 'ON' ? 'Relay ON' : 'Relay OFF',
+      target: cmd.deviceId,
+      actor: 'Operator',
+      time: formatRelativeTime(new Date(cmd.createdAtMs)),
+      state: cmd.status,
+    }));
+  }, [commands]);
 
   return {
     devices,
-    alerts,
     commands,
     consumptionSeries,
     siteBreakdown,
     costTrend,
     renewableMix,
+    renewableMixConfigured,
     emissionsTrend,
-    sustainabilityEquivalents: {
-      trees: Math.max(0, Math.round(devices.reduce((sum, device) => sum + Math.max(0, device.todayKwh), 0) * 0.22)),
-      kmAvoided: Math.max(0, Math.round(devices.reduce((sum, device) => sum + Math.max(0, device.todayKwh), 0) * 4.8)),
-      homesPowered: Math.max(0, Math.round(devices.reduce((sum, device) => sum + Math.max(0, device.todayKwh), 0) / 220)),
-      phonesCharged: Math.max(0, Math.round(devices.reduce((sum, device) => sum + Math.max(0, device.todayKwh), 0) * 420)),
-    },
+    sustainabilityEquivalents: (() => {
+      const co2TodayKg = devices.reduce((sum, device) => sum + Math.max(0, device.todayKwh), 0) * GRID_EMISSION_FACTOR_KGCO2_PER_KWH;
+      return {
+        trees: Math.max(0, Math.round(co2TodayKg * 0.22)),
+        kmAvoided: Math.max(0, Math.round(co2TodayKg * 4.8)),
+        homesPowered: Math.max(0, Math.round(co2TodayKg / 220)),
+        phonesCharged: Math.max(0, Math.round(co2TodayKg * 420)),
+      };
+    })(),
     recommendations,
-    reliabilityMetrics: {
-      uptime: devices.length ? Number(((devices.filter((device) => device.status === 'online').length / devices.length) * 100).toFixed(2)) : 0,
-      mttr: devices.filter((device) => device.status === 'offline' || device.status === 'fault').length > 0 ? '—' : 'N/A',
-      incidents30d: incidentHistory.length,
-      avgResponse: devices.filter((device) => device.status === 'offline' || device.status === 'fault').length > 0 ? '—' : 'N/A',
-      slaTarget: 99.5,
-      compliance: devices.length ? (devices.filter((device) => device.status === 'online').length / devices.length) >= 0.995 : false,
-    },
-    uptimeBySite,
-    incidentHistory,
-    incidents: incidentHistory,
-    safetyStatus,
-    exportsHistory: [],
-    recentActivity: [] as Array<{ id: string; action: string; target: string; actor: string; time: string; state: string }>,
+    exportsHistory,
+    recentActivity,
     hourlyProfile,
     telemetryByDevice: telemetryMap,
     allTelemetry,
+    recentTelemetry,
+    formatTelemetryDateTime,
+    formatTelemetryTime,
     platformSettings,
     tariffPerKwh,
+    isLoading,
+    getEmissionsSeries,
+    getEnergyChartSeries: getEnergyChartSeriesForRange,
+    getDeviceComparisonSeries: getDeviceComparisonSeriesForRange,
+    getComparisonPeriodRange,
+    getPointKwh,
+    EMPTY_TELEMETRY_MSG,
     TARIFF_TZS_PER_KWH,
     TIMEZONE,
     GRID_EMISSION_FACTOR_KGCO2_PER_KWH,
