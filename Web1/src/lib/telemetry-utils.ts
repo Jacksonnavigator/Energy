@@ -6,7 +6,6 @@
   id?: string;
 };
 
-
 /** Normalize power reading: Firebase may send kW (0.9) or watts (900). */
 export function normalizePowerW(p: number): number {
   if (p > 0 && p < 50) return p * 1000;
@@ -27,13 +26,17 @@ export function getEatHour(ts: number): number {
 export function dedupeTelemetryPoints<T extends IntegratablePoint>(points: T[]): T[] {
   const byKey = new Map<string, T>();
   for (const point of points) {
-    const key = `${point.deviceId ?? ''}:${point.ts}`;
+    const key = `${point.deviceId ?? ""}:${point.ts}`;
     byKey.set(key, point);
   }
   return Array.from(byKey.values()).sort((a, b) => a.ts - b.ts);
 }
 
-export function integrateKwhBetween(points: IntegratablePoint[], startMs: number, endMs: number): number {
+export function integrateKwhBetween(
+  points: IntegratablePoint[],
+  startMs: number,
+  endMs: number,
+): number {
   if (endMs <= startMs || points.length < 2) return 0;
   const sorted = [...points].sort((a, b) => a.ts - b.ts);
   let kwh = 0;
@@ -80,15 +83,18 @@ export function energyDeltaKwhBetween(
   return null;
 }
 
-/** Prefer power integration; fall back to backend energy (e) readings. */
-export function resolveKwhBetween(points: IntegratablePoint[], startMs: number, endMs: number): number {
-  const powerKwh = integrateKwhBetween(points, startMs, endMs);
-  if (powerKwh > 0) return powerKwh;
+/** Prefer backend energy (e) readings; fall back to power integration only when energy is missing. */
+export function resolveKwhBetween(
+  points: IntegratablePoint[],
+  startMs: number,
+  endMs: number,
+): number {
   const energyKwh = energyDeltaKwhBetween(points, startMs, endMs);
   if (energyKwh !== null && energyKwh > 0) return energyKwh;
+  const powerKwh = integrateKwhBetween(points, startMs, endMs);
+  if (powerKwh > 0) return powerKwh;
   return 0;
 }
-
 
 export function bucketIntegratedKwh(
   points: IntegratablePoint[],
@@ -98,7 +104,9 @@ export function bucketIntegratedKwh(
   alignEat = false,
 ): Array<{ bucketStart: number; kwh: number }> {
   const result: Array<{ bucketStart: number; kwh: number }> = [];
-  const alignedStart = alignEat ? alignBucketStartEat(startMs, bucketMs) : Math.floor(startMs / bucketMs) * bucketMs;
+  const alignedStart = alignEat
+    ? alignBucketStartEat(startMs, bucketMs)
+    : Math.floor(startMs / bucketMs) * bucketMs;
   for (let t = alignedStart; t < endMs; t += bucketMs) {
     const bucketEnd = Math.min(t + bucketMs, endMs);
     result.push({ bucketStart: t, kwh: resolveKwhBetween(points, t, bucketEnd) });
@@ -111,23 +119,25 @@ export function pointKwhAtIndex(points: IntegratablePoint[], index: number): num
   const a = points[index];
   const b = points[index + 1];
   if (b) {
+    if (typeof a.energy === "number" && typeof b.energy === "number" && b.energy >= a.energy) {
+      return b.energy - a.energy;
+    }
     const deltaHours = (b.ts - a.ts) / (3600 * 1000);
     if (deltaHours > 0) {
       const powerKwh = Math.max(0, ((a.power + b.power) / 2 / 1000) * deltaHours);
       if (powerKwh > 0) return powerKwh;
-    }
-    if (typeof a.energy === "number" && typeof b.energy === "number" && b.energy >= a.energy) {
-      return b.energy - a.energy;
     }
   }
   if (typeof a.energy === "number" && a.energy > 0) return a.energy;
   return 0;
 }
 
-export function buildDeviceTelemetryIndex(points: IntegratablePoint[]): Map<string, IntegratablePoint[]> {
+export function buildDeviceTelemetryIndex(
+  points: IntegratablePoint[],
+): Map<string, IntegratablePoint[]> {
   const map = new Map<string, IntegratablePoint[]>();
   for (const point of points) {
-    const id = point.deviceId ?? 'unknown';
+    const id = point.deviceId ?? "unknown";
     const list = map.get(id) ?? [];
     list.push(point);
     map.set(id, list);

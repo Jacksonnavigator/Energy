@@ -1,6 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { ArrowDown, ArrowUp, Gauge, Leaf, Timer, Zap } from "lucide-react";
 import { AppShell } from "@/components/hydranet/AppShell";
 import { StatCard } from "@/components/hydranet/StatCard";
@@ -20,10 +32,14 @@ export const Route = createFileRoute("/energy")({
       { title: "Energy Analytics | Smart Energy" },
       {
         name: "description",
-        content: "Consumption profiles, peak demand, load factor and site-level energy breakdown for connected assets.",
+        content:
+          "Consumption profiles, peak demand, load factor and site-level energy breakdown for connected assets.",
       },
       { property: "og:title", content: "Energy Analytics | Smart Energy" },
-      { property: "og:description", content: "Analyse consumption, peak demand and load factor across every site." },
+      {
+        property: "og:description",
+        content: "Analyse consumption, peak demand and load factor across every site.",
+      },
     ],
   }),
   component: EnergyPage,
@@ -45,14 +61,24 @@ const periodColor: Record<TouPeriod, string> = {
 
 type SortKey = "hour" | "kwh" | "cost";
 function TimeOfUseExplorer() {
-  const { hourlyProfile, touBands, currency, EMPTY_TELEMETRY_MSG: emptyMsg } = useHydranetDashboardData();
+  const {
+    hourlyProfile,
+    touBands,
+    currency,
+    EMPTY_TELEMETRY_MSG: emptyMsg,
+  } = useHydranetDashboardData();
   const [filter, setFilter] = useState<TouPeriod | "all">("all");
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "hour", dir: "asc" });
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "hour",
+    dir: "asc",
+  });
 
   const rows = useMemo(() => {
     const base = hourlyProfile.filter((h) => filter === "all" || h.period === filter);
-    return [...base].sort((a, b) => (sort.dir === "asc" ? a[sort.key] - b[sort.key] : b[sort.key] - a[sort.key]));
-  }, [filter, sort]);
+    return [...base].sort((a, b) =>
+      sort.dir === "asc" ? a[sort.key] - b[sort.key] : b[sort.key] - a[sort.key],
+    );
+  }, [filter, hourlyProfile, sort]);
 
   const bandTotals = touBands.map((b) => {
     const set = hourlyProfile.filter((h) => h.period === b.id);
@@ -85,11 +111,17 @@ function TimeOfUseExplorer() {
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">Consumption by time of day</h2>
           <p className="text-xs text-muted-foreground">
-            Choose a tariff band to compare peak, standard and off-peak usage · East Africa Time (UTC+3)
+            Choose a tariff band to compare peak, standard and off-peak usage · East Africa Time
+            (UTC+3)
           </p>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {([{ id: "all", label: "All hours" }, ...touBands] as { id: TouPeriod | "all"; label: string }[]).map((b) => (
+          {(
+            [{ id: "all", label: "All hours" }, ...touBands] as {
+              id: TouPeriod | "all";
+              label: string;
+            }[]
+          ).map((b) => (
             <button
               key={b.id}
               onClick={() => setFilter(b.id)}
@@ -116,7 +148,8 @@ function TimeOfUseExplorer() {
             </div>
             <p className="mt-2 text-lg font-semibold tabular-nums">{b.kwh.toLocaleString()} kWh</p>
             <p className="text-xs text-muted-foreground tabular-nums">
-              {Math.round((b.kwh / totalKwh) * 100)}% of day · avg {b.avg.toFixed(0)} kWh/h · {currency(b.cost)}
+              {totalKwh > 0 ? Math.round((b.kwh / totalKwh) * 100) : 0}% of day · avg{" "}
+              {b.avg.toFixed(0)} kWh/h · {currency(b.cost)}
             </p>
           </div>
         ))}
@@ -124,24 +157,39 @@ function TimeOfUseExplorer() {
 
       <div className="h-64 px-2 py-4">
         {hourlyProfile.length ? (
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={[...rows].sort((a, b) => a.hour - b.hour)} margin={{ left: -18, right: 8, top: 8 }}>
-            <CartesianGrid stroke="var(--border)" vertical={false} />
-            <XAxis dataKey="t" tickLine={false} axisLine={false} interval={filter === "all" ? 2 : 0} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-            <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-            <Tooltip cursor={{ fill: "var(--secondary)" }} contentStyle={tooltipStyle} />
-            <Bar dataKey="kwh" name="kWh" radius={[6, 6, 0, 0]}>
-              {rows
-                .slice()
-                .sort((a, b) => a.hour - b.hour)
-                .map((h) => (
-                  <Cell key={h.hour} fill={periodColor[h.period]} />
-                ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={[...rows].sort((a, b) => a.hour - b.hour)}
+              margin={{ left: -18, right: 8, top: 8 }}
+            >
+              <CartesianGrid stroke="var(--border)" vertical={false} />
+              <XAxis
+                dataKey="t"
+                tickLine={false}
+                axisLine={false}
+                interval={filter === "all" ? 2 : 0}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+              />
+              <Tooltip cursor={{ fill: "var(--secondary)" }} contentStyle={tooltipStyle} />
+              <Bar dataKey="kwh" name="kWh" radius={[6, 6, 0, 0]}>
+                {rows
+                  .slice()
+                  .sort((a, b) => a.hour - b.hour)
+                  .map((h) => (
+                    <Cell key={h.hour} fill={periodColor[h.period]} />
+                  ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         ) : (
-          <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+          <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            {emptyMsg}
+          </p>
         )}
       </div>
 
@@ -149,10 +197,16 @@ function TimeOfUseExplorer() {
         <table className="w-full min-w-[520px] text-sm">
           <thead>
             <tr className="border-b border-border bg-secondary/40 text-xs">
-              <th className="px-5 py-2.5 text-left font-medium"><SortButton k="hour" label="Hour" /></th>
+              <th className="px-5 py-2.5 text-left font-medium">
+                <SortButton k="hour" label="Hour" />
+              </th>
               <th className="px-5 py-2.5 text-left font-medium text-muted-foreground">Band</th>
-              <th className="px-5 py-2.5 text-right font-medium"><SortButton k="kwh" label="Energy (kWh)" /></th>
-              <th className="px-5 py-2.5 text-right font-medium"><SortButton k="cost" label="Cost" /></th>
+              <th className="px-5 py-2.5 text-right font-medium">
+                <SortButton k="kwh" label="Energy (kWh)" />
+              </th>
+              <th className="px-5 py-2.5 text-right font-medium">
+                <SortButton k="cost" label="Cost" />
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -162,7 +216,10 @@ function TimeOfUseExplorer() {
                 <td className="px-5 py-2.5">
                   <span
                     className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium"
-                    style={{ background: `color-mix(in oklab, ${periodColor[h.period]} 14%, transparent)`, color: periodColor[h.period] }}
+                    style={{
+                      background: `color-mix(in oklab, ${periodColor[h.period]} 14%, transparent)`,
+                      color: periodColor[h.period],
+                    }}
                   >
                     {touBands.find((b) => b.id === h.period)?.label}
                   </span>
@@ -178,8 +235,13 @@ function TimeOfUseExplorer() {
   );
 }
 
-
-const DEVICE_LINE_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+const DEVICE_LINE_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
 
 function eatDateInputValue(ts: number): string {
   const eat = new Date(ts + 3 * 60 * 60 * 1000);
@@ -242,7 +304,8 @@ function DeviceComparisonChart() {
         <div>
           <h2 className="text-base font-semibold tracking-tight">Device comparison</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Compare TV, Fridge, or all devices on one chart · pick hour, day, week, month or custom dates
+            Compare selected devices or the full fleet on one chart · pick hour, day, week, month or
+            custom dates
           </p>
         </div>
 
@@ -327,8 +390,18 @@ function DeviceComparisonChart() {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ left: -18, right: 4, top: 8 }}>
               <CartesianGrid stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-              <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} unit=" kWh" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                unit=" kWh"
+              />
               <Tooltip contentStyle={tooltipStyle} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               {activeDevices.map((device, index) => (
@@ -356,7 +429,9 @@ function DeviceComparisonChart() {
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+          <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            {emptyMsg}
+          </p>
         )}
       </div>
     </section>
@@ -368,8 +443,10 @@ function EnergyPage() {
     siteBreakdown,
     devices,
     platformSettings,
+    dashboardSummary,
     currency,
-    recentTelemetry, formatTelemetryDateTime,
+    recentTelemetry,
+    formatTelemetryDateTime,
     getEnergyChartSeries,
     getPointKwh,
     GRID_EMISSION_FACTOR_KGCO2_PER_KWH,
@@ -379,10 +456,10 @@ function EnergyPage() {
 
   const chartData = getEnergyChartSeries(chartRange);
 
-  const monthToDateKwh = siteBreakdown.reduce((sum, site) => sum + site.kwh, 0);
-  const peakDemand = devices.length ? Math.max(0, ...devices.map((device) => device.load)) : 0;
-  const loadFactor = devices.length ? Math.min(1, (devices.reduce((sum, device) => sum + device.load, 0) / Math.max(1, devices.length * 2.5))) : 0;
-  const carbonIntensity = devices.length ? Math.round(GRID_EMISSION_FACTOR_KGCO2_PER_KWH * 1000) : 0;
+  const monthToDateKwh = dashboardSummary.monthToDateKwh;
+  const peakDemand = dashboardSummary.peakDemandKw;
+  const loadFactor = dashboardSummary.loadFactor;
+  const carbonIntensity = dashboardSummary.carbonIntensityGCo2PerKwh;
   const efficiencyNotes = useMemo(() => {
     if (!devices.length) return [] as Array<{ title: string; detail: string }>;
 
@@ -410,17 +487,36 @@ function EnergyPage() {
       <DeviceComparisonChart />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Month to date" value={monthToDateKwh.toLocaleString()} unit="kWh" icon={Gauge} tone="primary" />
-        <StatCard label="Peak demand" value={peakDemand.toFixed(1)} unit="kW" icon={Zap} tone="warning" />
+        <StatCard
+          label="Month to date"
+          value={monthToDateKwh.toLocaleString()}
+          unit="kWh"
+          icon={Gauge}
+          tone="primary"
+        />
+        <StatCard
+          label="Peak demand"
+          value={peakDemand.toFixed(1)}
+          unit="kW"
+          icon={Zap}
+          tone="warning"
+        />
         <StatCard label="Load factor" value={loadFactor.toFixed(2)} icon={Timer} />
-        <StatCard label="Carbon intensity" value={String(carbonIntensity)} unit="gCO₂/kWh" icon={Leaf} />
+        <StatCard
+          label="Carbon intensity"
+          value={String(carbonIntensity)}
+          unit="gCO₂/kWh"
+          icon={Leaf}
+        />
       </div>
 
       <section className="card-surface mt-6 p-5">
         <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-sm font-semibold">Consumption vs cost</h2>
-            <p className="text-xs text-muted-foreground">Switch the chart to hours, days, weeks or months</p>
+            <p className="text-xs text-muted-foreground">
+              Switch the chart to hours, days, weeks or months
+            </p>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {(["hours", "days", "weeks", "months"] as EnergyChartRange[]).map((range) => (
@@ -443,19 +539,44 @@ function EnergyPage() {
 
         <div className="mt-5 h-72">
           {chartData.length ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ left: -18, right: 4, top: 8 }}>
-              <CartesianGrid stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-              <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey="kwh" name="kWh" stroke="var(--chart-1)" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="cost" name="Cost (K)" stroke="var(--chart-2)" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ left: -18, right: 4, top: 8 }}>
+                <CartesianGrid stroke="var(--border)" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line
+                  type="monotone"
+                  dataKey="kwh"
+                  name="kWh"
+                  stroke="var(--chart-1)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="cost"
+                  name="Cost (K)"
+                  stroke="var(--chart-2)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
           ) : (
-            <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+            <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              {emptyMsg}
+            </p>
           )}
         </div>
       </section>
@@ -471,17 +592,25 @@ function EnergyPage() {
               <thead>
                 <tr className="border-b border-border">
                   <th className="text-left py-2 px-3 font-medium text-muted-foreground">Device</th>
-                  <th className="text-left py-2 px-3 font-medium text-muted-foreground">Date & Time</th>
-                  <th className="text-right py-2 px-3 font-medium text-muted-foreground">Power (kW)</th>
-                  <th className="text-right py-2 px-3 font-medium text-muted-foreground">Energy (kWh)</th>
+                  <th className="text-left py-2 px-3 font-medium text-muted-foreground">
+                    Date & Time
+                  </th>
+                  <th className="text-right py-2 px-3 font-medium text-muted-foreground">
+                    Power (kW)
+                  </th>
+                  <th className="text-right py-2 px-3 font-medium text-muted-foreground">
+                    Energy (kWh)
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {recentTelemetry.slice(0, 20).map((point) => {
                   return (
                     <tr key={point.id} className="border-b border-border/50 hover:bg-secondary/30">
-                      <td className="py-2 px-3">{point.deviceName || 'Unknown'}</td>
-                      <td className="py-2 px-3 text-muted-foreground">{formatTelemetryDateTime(point.ts)}</td>
+                      <td className="py-2 px-3">{point.deviceName || "Unknown"}</td>
+                      <td className="py-2 px-3 text-muted-foreground">
+                        {formatTelemetryDateTime(point.ts)}
+                      </td>
                       <td className="text-right py-2 px-3">{(point.power / 1000).toFixed(2)}</td>
                       <td className="text-right py-2 px-3">{getPointKwh(point).toFixed(3)}</td>
                     </tr>
@@ -503,21 +632,32 @@ function EnergyPage() {
           <h2 className="text-sm font-semibold">Consumption by site</h2>
           <div className="mt-5 h-64">
             {siteBreakdown.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={siteBreakdown} margin={{ left: -18, right: 4, top: 8 }}>
-                <CartesianGrid stroke="var(--border)" vertical={false} />
-                <XAxis dataKey="site" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-                <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
-                <Tooltip cursor={{ fill: "var(--secondary)" }} contentStyle={tooltipStyle} />
-                <Bar dataKey="kwh" name="kWh" radius={[6, 6, 0, 0]}>
-                  {siteBreakdown.map((_, i) => (
-                    <Cell key={i} fill={i === 0 ? "var(--chart-1)" : "var(--chart-4)"} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={siteBreakdown} margin={{ left: -18, right: 4, top: 8 }}>
+                  <CartesianGrid stroke="var(--border)" vertical={false} />
+                  <XAxis
+                    dataKey="site"
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                  />
+                  <Tooltip cursor={{ fill: "var(--secondary)" }} contentStyle={tooltipStyle} />
+                  <Bar dataKey="kwh" name="kWh" radius={[6, 6, 0, 0]}>
+                    {siteBreakdown.map((_, i) => (
+                      <Cell key={i} fill={i === 0 ? "var(--chart-1)" : "var(--chart-4)"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
             ) : (
-              <p className="flex h-full items-center justify-center text-sm text-muted-foreground">{emptyMsg}</p>
+              <p className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                {emptyMsg}
+              </p>
             )}
           </div>
         </section>
@@ -534,7 +674,9 @@ function EnergyPage() {
               ))}
             </ul>
           ) : (
-            <p className="mt-4 text-sm text-muted-foreground">No efficiency issues were detected from the live device data yet.</p>
+            <p className="mt-4 text-sm text-muted-foreground">
+              No efficiency issues were detected from the live device data yet.
+            </p>
           )}
         </section>
       </div>
