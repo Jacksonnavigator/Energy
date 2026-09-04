@@ -34,7 +34,9 @@ function ThemeToggle() {
 
   useEffect(() => {
     const stored = window.localStorage.getItem("hydranet-theme");
-    const isDark = stored ? stored === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const isDark = stored
+      ? stored === "dark"
+      : window.matchMedia("(prefers-color-scheme: dark)").matches;
     setDark(isDark);
     document.documentElement.classList.toggle("dark", isDark);
   }, []);
@@ -50,7 +52,7 @@ function ThemeToggle() {
     <button
       onClick={toggle}
       aria-label="Toggle color theme"
-      className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:text-foreground"
+      className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:border-primary/35 hover:text-foreground"
     >
       {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
@@ -69,10 +71,10 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
             to={to}
             onClick={onNavigate}
             className={cn(
-              "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              "group flex items-center gap-3 rounded-md border border-transparent px-3 py-2 text-sm font-medium transition-colors",
               active
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+                ? "border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
+                : "text-muted-foreground hover:border-sidebar-border hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
             )}
           >
             <Icon className={cn("h-4 w-4 shrink-0", active && "text-primary")} />
@@ -87,11 +89,11 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
 function Brand() {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
-      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground">
+      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground shadow-sm">
         <Activity className="h-4.5 w-4.5" />
       </div>
       <div className="min-w-0 leading-tight">
-        <p className="truncate text-sm font-semibold tracking-tight">Smart Energy</p>
+        <p className="truncate text-sm font-semibold">Smart Energy</p>
         <p className="truncate text-[11px] text-muted-foreground">Energy Intelligence</p>
       </div>
     </div>
@@ -99,24 +101,34 @@ function Brand() {
 }
 
 function GridStatusCard() {
-  const { devices } = useHydranetDashboardData();
-  const totalLoad = devices.reduce((sum, device) => sum + device.load, 0);
-  const offlineCount = devices.filter((device) => device.status === "offline" || device.status === "fault").length;
+  const { devices, dashboardSummary } = useHydranetDashboardData();
+  const totalLoad = dashboardSummary.totalLoadKw;
+  const offlineCount = dashboardSummary.offline + dashboardSummary.faults;
+  const totalRatedKw = devices.reduce((sum, device) => sum + Math.max(0, device.ratedKw), 0);
+  const loadPct =
+    totalRatedKw > 0 ? Math.min(100, Math.round((totalLoad / totalRatedKw) * 100)) : 0;
 
   const status = useMemo(() => {
     if (!devices.length) return { label: "No devices", tone: "bg-muted-foreground" };
     if (offlineCount > 0) return { label: "Degraded", tone: "bg-warning" };
-    if (totalLoad > devices.length * 8) return { label: "High load", tone: "bg-warning" };
+    if (totalRatedKw > 0 && totalLoad > totalRatedKw * 0.8)
+      return { label: "High load", tone: "bg-warning" };
     return { label: "Nominal", tone: "bg-success" };
-  }, [devices.length, offlineCount, totalLoad]);
+  }, [devices.length, offlineCount, totalLoad, totalRatedKw]);
 
   return (
     <div className="card-surface p-3">
-      <p className="text-xs font-medium">Grid status</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium">Grid status</p>
+        <span className="text-[11px] text-muted-foreground tabular-nums">{loadPct}%</span>
+      </div>
       <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className={cn("h-1.5 w-1.5 rounded-full", status.tone)} />
-        {status.label} · {totalLoad.toFixed(1)} kW fleet load
+        {status.label} - {totalLoad.toFixed(1)} kW fleet load
       </p>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-md bg-secondary">
+        <div className={cn("h-full rounded-md", status.tone)} style={{ width: loadPct + "%" }} />
+      </div>
     </div>
   );
 }
@@ -145,8 +157,8 @@ function UserBadge({ userEmail }: { userEmail?: string | null }) {
   const displayName = email ? email.split("@")[0] : "Guest";
 
   return (
-    <div className="hidden h-9 items-center gap-2 rounded-lg border border-border bg-card px-2.5 sm:flex">
-      <span className="grid h-6 w-6 place-items-center rounded-md bg-accent text-[11px] font-semibold text-accent-foreground">
+    <div className="hidden h-9 items-center gap-2 rounded-md border border-border bg-card px-2.5 sm:flex">
+      <span className="grid h-6 w-6 place-items-center rounded bg-accent text-[11px] font-semibold text-accent-foreground">
         {initials}
       </span>
       <span className="max-w-[120px] truncate text-xs font-medium">{displayName}</span>
@@ -170,8 +182,8 @@ export function AppShell({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-sidebar-border bg-sidebar px-4 py-5 lg:flex">
+    <div className="min-h-screen bg-transparent">
+      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-sidebar-border bg-sidebar/95 px-4 py-5 shadow-sm lg:flex">
         <Brand />
         <div className="mt-7 flex-1">
           <p className="label-eyebrow px-3 pb-2">Operations</p>
@@ -186,7 +198,11 @@ export function AppShell({
           <div className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-sidebar-border bg-sidebar px-4 py-5">
             <div className="flex items-center justify-between gap-2">
               <Brand />
-              <button aria-label="Close menu" onClick={() => setOpen(false)} className="text-muted-foreground">
+              <button
+                aria-label="Close menu"
+                onClick={() => setOpen(false)}
+                className="grid h-9 w-9 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent"
+              >
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -198,19 +214,21 @@ export function AppShell({
       )}
 
       <div className="lg:pl-64">
-        <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur">
+        <header className="sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75">
           <div className="mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-4 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-3">
               <button
                 aria-label="Open menu"
                 onClick={() => setOpen(true)}
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border text-muted-foreground lg:hidden"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-border bg-card text-muted-foreground lg:hidden"
               >
                 <Menu className="h-4 w-4" />
               </button>
               <div className="min-w-0">
-                <h1 className="truncate text-lg font-semibold tracking-tight sm:text-xl">{title}</h1>
-                {subtitle && <p className="truncate text-xs text-muted-foreground sm:text-sm">{subtitle}</p>}
+                <h1 className="truncate text-lg font-semibold sm:text-xl">{title}</h1>
+                {subtitle && (
+                  <p className="truncate text-xs text-muted-foreground sm:text-sm">{subtitle}</p>
+                )}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -220,7 +238,7 @@ export function AppShell({
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</main>
+        <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-7">{children}</main>
       </div>
     </div>
   );

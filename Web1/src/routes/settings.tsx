@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/hydranet/AppShell";
 import { Switch } from "@/components/ui/switch";
-import { savePlatformSettings, useHydranetDashboardData, type PlatformSettings } from "@/lib/dashboard-data";
+import {
+  savePlatformSettings,
+  useHydranetDashboardData,
+  type PlatformSettings,
+} from "@/lib/dashboard-data";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -11,10 +15,14 @@ export const Route = createFileRoute("/settings")({
       { title: "Platform Settings | Smart Energy" },
       {
         name: "description",
-        content: "Configure organisation details, tariff rates and notification channels for Smart Energy.",
+        content:
+          "Configure organisation details, tariff rates and notification channels for Smart Energy.",
       },
       { property: "og:title", content: "Platform Settings | Smart Energy" },
-      { property: "og:description", content: "Manage tariffs, thresholds and notification preferences." },
+      {
+        property: "og:description",
+        content: "Manage tariffs, thresholds and notification preferences.",
+      },
     ],
   }),
   component: SettingsPage,
@@ -148,6 +156,13 @@ function SettingsPage() {
               type="number"
             />
             <Field
+              label="Grid emissions factor"
+              value={String(form.emissionFactorKgCo2PerKwh)}
+              onChange={(v) => updateField("emissionFactorKgCo2PerKwh", Number(v) || 0)}
+              suffix="kgCO2/kWh"
+              type="number"
+            />
+            <Field
               label="Monthly budget"
               value={String(form.monthlyBudget)}
               onChange={(v) => updateField("monthlyBudget", Number(v) || 0)}
@@ -186,13 +201,17 @@ function SettingsPage() {
             title="Weekly digest"
             desc="Consumption and cost summary every Monday 07:00"
             checked={form.notifications.weeklyDigest}
-            onCheckedChange={(v) => updateField("notifications", { ...form.notifications, weeklyDigest: v })}
+            onCheckedChange={(v) =>
+              updateField("notifications", { ...form.notifications, weeklyDigest: v })
+            }
           />
           <ToggleRow
             title="Relay change confirmations"
             desc="Send a receipt whenever an asset is switched"
             checked={form.notifications.relayConfirmations}
-            onCheckedChange={(v) => updateField("notifications", { ...form.notifications, relayConfirmations: v })}
+            onCheckedChange={(v) =>
+              updateField("notifications", { ...form.notifications, relayConfirmations: v })
+            }
           />
         </div>
       </section>

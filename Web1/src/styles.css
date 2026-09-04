@@ -54,7 +54,7 @@
 }
 
 :root {
-  --radius: 0.85rem;
+  --radius: 0.5rem;
   --background: oklch(0.985 0.004 140);
   --foreground: oklch(0.21 0.015 160);
   --card: oklch(1 0 0);
@@ -140,7 +140,13 @@
   }
 
   body {
-    background-color: var(--color-background);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--secondary) 42%, transparent),
+        transparent 360px
+      ),
+      var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
@@ -150,14 +156,14 @@
 @utility card-surface {
   background-color: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
 }
 
 @utility label-eyebrow {
   font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--muted-foreground);
 }
